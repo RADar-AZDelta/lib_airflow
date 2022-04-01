@@ -74,7 +74,10 @@ setup(
 		#f'lib_azdelta @ file://localhost/{_here}/libs/lib_azdelta',
         "apache-airflow-providers-http",
         "apache-airflow-providers-odbc",
-        "apache-airflow-providers-google"
+        "apache-airflow-providers-google",
+        "polars",
+        "pyarrow",
+        "connectorx"
     ],
     classifiers=[
         "Programming Language :: Python :: 3",
