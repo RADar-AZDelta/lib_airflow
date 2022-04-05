@@ -2,8 +2,9 @@
 
 import time
 from tempfile import NamedTemporaryFile, _TemporaryFileWrapper
-from typing import Optional, Sequence, Tuple, Union
+from typing import Callable, Optional, Sequence, Tuple, Union
 
+import backoff
 import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -17,9 +18,6 @@ class ConnectorXToGCSOperator(BaseOperator):
         "sql",
         "bucket",
         "filename",
-        # "schema_filename",
-        # "schema",
-        # "parameters",
         "impersonation_chain",
     )
     template_ext: Sequence[str] = (".sql", ".sql.jinja")
@@ -31,14 +29,10 @@ class ConnectorXToGCSOperator(BaseOperator):
         *,
         connectorx_conn_id: str,
         sql: str,
+        func_modify_data: Optional[Callable[[pl.DataFrame], pl.DataFrame]] = None,
         bucket: str,
         filename: str = "upload.parquet",
-        # schema_filename: Optional[str] = None,
-        # approx_max_file_size_bytes: int = 1900000000,
-        # null_marker: Optional[str] = None,
         gzip: bool = False,
-        # schema: Optional[Union[str, list]] = None,
-        # parameters: Optional[dict] = None,
         gcp_conn_id: str = "google_cloud_default",
         delegate_to: Optional[str] = None,
         impersonation_chain: Optional[Union[str, Sequence[str]]] = None,
@@ -48,43 +42,79 @@ class ConnectorXToGCSOperator(BaseOperator):
 
         self.connectorx_conn_id = connectorx_conn_id
         self.sql = sql
+        self.func_modify_data = func_modify_data
         self.bucket = bucket
         self.filename = filename
         self.gzip = gzip
         self.gcp_conn_id = gcp_conn_id
         self.delegate_to = delegate_to
         self.impersonation_chain = impersonation_chain
+
         self.file_mime_type = "application/octet-stream"
+        self.gcs_hook = None
+        self.connectorx_hook = None
 
     def execute(self, context: "Context"):
-        table = self._query()
+        table = self._query(self.sql)
         with self._write_local_data_files(table) as file_to_upload:
             file_to_upload.flush()
-            self._upload_to_gcs(file_to_upload)
+            self._upload_to_gcs(file_to_upload, self.filename)
 
-    def _query(self) -> pa.Table:
-        self.log.info("Running query '%s", self.sql)
-        hook = ConnectorXHook(self.connectorx_conn_id)
-        table = hook.get_arrow_table(self.sql)
-        return table
+    @backoff.on_exception(
+        backoff.expo,
+        (Exception),
+        max_time=600,
+        max_tries=20,
+    )
+    def _query(self, sql) -> Union[pa.Table, pl.DataFrame]:
+        self.log.info("Running query '%s", sql)
+        hook = self._get_connectorx_hook()
 
-    def _write_local_data_files(self, table) -> _TemporaryFileWrapper:
+        if self.func_modify_data:
+            df = hook.get_polars_dataframe(sql)
+            return self.func_modify_data(df)
+        else:
+            table = hook.get_arrow_table(sql)
+            return table
+
+    def _write_local_data_files(
+        self, data: Union[pa.Table, pl.DataFrame]
+    ) -> _TemporaryFileWrapper:
         tmp_file_handle = NamedTemporaryFile(delete=True)
         self.log.info("Writing parquet files to: '%s'", tmp_file_handle.name)
-        pq.write_table(table, tmp_file_handle.name)
+        if isinstance(data, pl.DataFrame):
+            data.write_parquet(tmp_file_handle.name)
+        else:
+            pq.write_table(data, tmp_file_handle.name)
         return tmp_file_handle
 
-    def _upload_to_gcs(self, file_to_upload):
+    @backoff.on_exception(
+        backoff.expo,
+        (Exception),
+        max_time=600,
+        max_tries=20,
+    )
+    def _upload_to_gcs(self, file_to_upload, filename):
         self.log.info("Uploading '%s' to GCS.", file_to_upload.name)
-        hook = GCSHook(
-            gcp_conn_id=self.gcp_conn_id,
-            delegate_to=self.delegate_to,
-            impersonation_chain=self.impersonation_chain,
-        )
+        hook = self._get_gcs_hook_hook()
         hook.upload(
             self.bucket,
-            self.filename,
+            filename,
             file_to_upload.name,
             mime_type=self.file_mime_type,
             gzip=self.gzip,
         )
+
+    def _get_connectorx_hook(self):
+        if not self.connectorx_hook:
+            self.connectorx_hook = ConnectorXHook(self.connectorx_conn_id)
+        return self.connectorx_hook
+
+    def _get_gcs_hook_hook(self):
+        if not self.gcs_hook:
+            self.gcs_hook = GCSHook(
+                gcp_conn_id=self.gcp_conn_id,
+                delegate_to=self.delegate_to,
+                impersonation_chain=self.impersonation_chain,
+            )
+        return self.gcs_hook

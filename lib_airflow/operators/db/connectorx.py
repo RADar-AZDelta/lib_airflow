@@ -1,7 +1,8 @@
 """ConnectorX to GCS operator."""
 
-from typing import Sequence
+from typing import Callable, Optional, Sequence
 
+import polars as pl
 from airflow.models.baseoperator import BaseOperator
 from lib_airflow.hooks.db.connectorx import ConnectorXHook
 
@@ -18,12 +19,14 @@ class ConnectorXOperator(BaseOperator):
         *,
         connectorx_conn_id: str,
         sql: str,
+        func_modify_data: Optional[Callable[[pl.DataFrame], pl.DataFrame]] = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
 
         self.connectorx_conn_id = connectorx_conn_id
         self.sql = sql
+        self.func_modify_data = func_modify_data
 
     def get_hook(self):
         if not self._hook:
@@ -35,5 +38,8 @@ class ConnectorXOperator(BaseOperator):
         hook = self.get_hook()
 
         df = hook.get_polars_dataframe(query=self.sql)
+
+        if self.func_modify_data:
+            df = self.func_modify_data(df)
 
         return df.write_json(row_oriented=True)
