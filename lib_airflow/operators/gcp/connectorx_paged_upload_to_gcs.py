@@ -73,6 +73,8 @@ FETCH NEXT {{ page_size }} ROWS ONLY
             page += 1
             if self.func_page_loaded:
                 self.func_page_loaded(self.table, context, page)
+            if page > (cast(int, self.start_page) or 0 + 100):
+                break
 
     def _paged_upload(self, sql: str, page: int) -> int:
         data = self._query(sql)

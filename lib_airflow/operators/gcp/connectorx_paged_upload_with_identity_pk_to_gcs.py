@@ -63,7 +63,7 @@ from {{ table }}
         jinja_env = self.get_template_env()
 
         max_identity_value = self._get_max_identity_value()
-        current_identity_value_lower = cast(int, self.start_identity)
+        current_identity_value_lower = cast(int, self.start_identity) or 0
         while current_identity_value_lower < (
             max_identity_value + cast(int, self.page_size)
         ):
@@ -81,13 +81,16 @@ from {{ table }}
                 sql, current_identity_value_lower // cast(int, self.page_size)
             )
             current_identity_value_lower += cast(int, self.page_size)
-
             if self.func_page_loaded:
                 self.func_page_loaded(
                     self.table,
                     context,
                     current_identity_value_lower,
                 )
+            if (current_identity_value_lower // cast(int, self.page_size)) > (
+                (cast(int, self.start_identity) or 0 // cast(int, self.page_size)) + 100
+            ):
+                break
 
     def _paged_upload(self, sql: str, page: int) -> int:
         data = self._query(sql)
