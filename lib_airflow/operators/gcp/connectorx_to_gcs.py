@@ -83,9 +83,10 @@ class ConnectorXToGCSOperator(BaseOperator):
         tmp_file_handle = NamedTemporaryFile(delete=True)
         self.log.info("Writing parquet files to: '%s'", tmp_file_handle.name)
         if isinstance(data, pl.DataFrame):
-            data.write_parquet(tmp_file_handle.name)
-        else:
-            pq.write_table(data, tmp_file_handle.name)
+            # data.write_parquet(tmp_file_handle.name)
+            data = data.to_arrow()
+        # else:
+        pq.write_table(data, tmp_file_handle.name)
         return tmp_file_handle
 
     @backoff.on_exception(

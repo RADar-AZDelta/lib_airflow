@@ -61,15 +61,8 @@ from {{ table }}
 
     def execute(self, context: "Context") -> None:
         jinja_env = self.get_template_env()
-        template = jinja_env.from_string(self.max_identity_sql)
-        sql = template.render(
-            table=self.table,
-            identity_column=self.identity_column,
-        )
-        hook = self._get_connectorx_hook()
-        table = hook.get_arrow_table(sql)
-        max_identity_value = table["max_identity_value"][0].as_py()
 
+        max_identity_value = self._get_max_identity_value()
         current_identity_value_lower = cast(int, self.start_identity)
         while current_identity_value_lower < (
             max_identity_value + cast(int, self.page_size)
@@ -97,13 +90,28 @@ from {{ table }}
                 )
 
     def _paged_upload(self, sql: str, page: int) -> int:
-        table = self._query(sql)
-        returned_rows = table.num_rows
+        data = self._query(sql)
+        if isinstance(data, pl.DataFrame):
+            returned_rows = len(data)
+        else:
+            returned_rows = data.num_rows
         self.log.info(f"Rows fetched for page {page}: {returned_rows}")
 
-        with self._write_local_data_files(table) as file_to_upload:
-            file_to_upload.flush()
-            self._upload_to_gcs(
-                file_to_upload, f"{self.bucket_dir}/{self.table}_{page}.parquet"
-            )
+        if returned_rows > 0:
+            with self._write_local_data_files(data) as file_to_upload:
+                file_to_upload.flush()
+                self._upload_to_gcs(
+                    file_to_upload, f"{self.bucket_dir}/{self.table}_{page}.parquet"
+                )
         return returned_rows
+
+    def _get_max_identity_value(self):
+        jinja_env = self.get_template_env()
+        template = jinja_env.from_string(self.max_identity_sql)
+        sql = template.render(
+            table=self.table,
+            identity_column=self.identity_column,
+        )
+        hook = self._get_connectorx_hook()
+        table = hook.get_arrow_table(sql)
+        return table["max_identity_value"][0].as_py()

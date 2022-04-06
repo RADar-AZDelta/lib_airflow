@@ -75,12 +75,15 @@ FETCH NEXT {{ page_size }} ROWS ONLY
                 self.func_page_loaded(self.table, context, page)
 
     def _paged_upload(self, sql: str, page: int) -> int:
-        table = self._query(sql)
-        returned_rows = table.num_rows
+        data = self._query(sql)
+        if isinstance(data, pl.DataFrame):
+            returned_rows = len(data)
+        else:
+            returned_rows = data.num_rows
         self.log.info(f"Rows fetched for page {page}: {returned_rows}")
 
         if returned_rows > 0:
-            with self._write_local_data_files(table) as file_to_upload:
+            with self._write_local_data_files(data) as file_to_upload:
                 file_to_upload.flush()
                 self._upload_to_gcs(
                     file_to_upload, f"{self.bucket_dir}/{self.table}_{page}.parquet"
