@@ -1,11 +1,11 @@
 from typing import Sequence
 
 from airflow.providers.google.cloud.transfers.gcs_to_bigquery import (
-    GCSToBigQueryOperator as BaseOperator,
+    GCSToBigQueryOperator as GCSToBigQueryBaseOperator,
 )
 
 
-class GCSToBigQueryOperator(BaseOperator):
+class GCSToBigQueryOperator(GCSToBigQueryBaseOperator):
     template_fields: Sequence[str] = (
         "bucket",
         "source_objects",
