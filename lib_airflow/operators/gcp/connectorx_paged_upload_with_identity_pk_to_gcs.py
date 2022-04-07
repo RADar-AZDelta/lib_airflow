@@ -87,10 +87,6 @@ from {{ table }}
                     context,
                     current_identity_value_lower,
                 )
-            if (current_identity_value_lower // cast(int, self.page_size)) > (
-                (cast(int, self.start_identity) or 0 // cast(int, self.page_size)) + 100
-            ):
-                break
 
     def _paged_upload(self, sql: str, page: int) -> int:
         data = self._query(sql)
