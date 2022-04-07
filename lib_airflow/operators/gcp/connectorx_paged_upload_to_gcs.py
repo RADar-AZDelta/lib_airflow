@@ -57,7 +57,7 @@ FETCH NEXT {{ page_size }} ROWS ONLY
 
     def execute(self, context: "Context") -> None:
         jinja_env = self.get_template_env()
-        order_by = ", ".join(self.pk_columns)
+        order_by = ", ".join(self.pk_columns) or "1"
 
         page = cast(int, self.start_page) or 0
         returned_rows = self.page_size
