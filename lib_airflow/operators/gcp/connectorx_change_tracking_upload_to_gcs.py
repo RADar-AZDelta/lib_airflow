@@ -136,7 +136,8 @@ where pk.is_primary_key = 1
                 with self._write_local_data_files(df) as file_to_upload:
                     file_to_upload.flush()
                     self._upload_to_gcs(
-                        file_to_upload, f"{self.bucket_dir}/{self.table}_{page}.parquet"
+                        file_to_upload,
+                        f"{self.bucket_dir}/{self.table}_{self.last_synchronization_version}_{page}.parquet",
                     )
 
             page += 1
