@@ -56,8 +56,13 @@ class ConnectorXHook(BaseHook):
         partition_range: Optional[Tuple[int, int]] = None,
         partition_num: Optional[int] = None,
     ) -> Any:
+        if self.connection.conn_type == "google_cloud_platform":
+            conn = f"bigquery://{self.connection.extra_dejson['extra__google_cloud_platform__key_path']}"
+        else:
+            conn = unquote(self.connection.get_uri())
+
         return cx.read_sql(
-            conn=unquote(self.connection.get_uri()),
+            conn=conn,
             query=query,  # type: ignore
             return_type=return_type,
             protocol=protocol,
