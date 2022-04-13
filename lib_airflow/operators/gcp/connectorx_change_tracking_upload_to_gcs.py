@@ -43,7 +43,7 @@ class ConnectorXChangeTrackingUploadToGCSOperator(ConnectorXToGCSOperator):
         sql: str = """{% raw %}
 SELECT ct.SYS_CHANGE_VERSION, ct.SYS_CHANGE_OPERATION, {{ pk_columns }}, {{ columns }}
 FROM CHANGETABLE(CHANGES {{ table }}, {{ last_synchronization_version }}) AS ct
-left outer join {{ table }} t on {{ join_on_clause }}
+left outer join {{ table }} t with (nolock) on {{ join_on_clause }}
 ORDER BY SYS_CHANGE_VERSION
 OFFSET {{ page * page_size }} ROWS
 FETCH NEXT {{ page_size }} ROWS ONLY

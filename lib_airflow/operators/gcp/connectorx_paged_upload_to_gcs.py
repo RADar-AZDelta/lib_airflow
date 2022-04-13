@@ -34,11 +34,24 @@ class ConnectorXPagedUploadToGCSOperator(ConnectorXToGCSOperator):
         table: str,
         pk_columns: Union[List[str], str],
         sql: str = """{% raw %}
+{% if pk_columns %}
+with cte as (
+	select {{ pk_columns }}
+	from {{ table }} with (nolock)
+	ORDER BY {{ order_by }}
+    OFFSET {{ page * page_size }} ROWS
+    FETCH NEXT {{ page_size }} ROWS ONLY
+)
+select t.*
+from cte 
+inner join {{ table }} t with (nolock) on {{ join_clause }}
+{% else %}
 select *
-from {{ table }}
+from {{ table }} with (nolock)
 ORDER BY {{ order_by }}
 OFFSET {{ page * page_size }} ROWS
 FETCH NEXT {{ page_size }} ROWS ONLY
+{% endif %}
 {% endraw %}""",
         start_page: Union[int, str] = 0,
         page_size: Union[int, str] = 100000,
@@ -57,15 +70,23 @@ FETCH NEXT {{ page_size }} ROWS ONLY
 
     def execute(self, context: "Context") -> None:
         jinja_env = self.get_template_env()
+        pk_columns = ", ".join(self.pk_columns)
         order_by = ", ".join(self.pk_columns) or "1"
-
+        join_clause = " and ".join(
+            map(
+                lambda column: f"cte.[{column}] = t.[{column}]",
+                self.pk_columns,
+            )
+        )
         page = cast(int, self.start_page) or 0
         returned_rows = self.page_size
         while returned_rows == self.page_size:
             template = jinja_env.from_string(self.sql)
             sql = template.render(
                 table=self.table,
+                pk_columns=pk_columns,
                 order_by=order_by,
+                join_clause=join_clause,
                 page_size=self.page_size,
                 page=page,
             )
