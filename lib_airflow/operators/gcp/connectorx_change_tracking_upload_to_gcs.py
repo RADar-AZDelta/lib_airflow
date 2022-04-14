@@ -96,12 +96,6 @@ where pk.is_primary_key = 1
             map(lambda pk: f"t.[{pk[0]}] = ct.[{pk[1]}]", pks),
         )
 
-        # page = 0
-        # returned_rows = self.page_size
-        # last_synchronization_version = None
-
-        # while returned_rows == self.page_size:
-
         template = jinja_env.from_string(self.sql)
         sql = template.render(
             pk_columns=", ".join(map(lambda pk: f"ct.[{pk[1]}]", pks)),
@@ -110,7 +104,6 @@ where pk.is_primary_key = 1
             last_synchronization_version=self.last_synchronization_version,
             join_on_clause=join_on_clause,
             page_size=self.page_size,
-            # page=page,
         )
 
         df = self._query(sql)
@@ -145,7 +138,6 @@ where pk.is_primary_key = 1
                 f"{self.bucket_dir}/{self.table}_{self.last_synchronization_version}.parquet",
             )
 
-        # page += 1
         if self.func_till_sys_change_version_loaded:
             self.func_till_sys_change_version_loaded(
                 self.table, context, last_synchronization_version
