@@ -31,6 +31,7 @@ class ConnectorXToGCSOperator(BaseOperator):
         connectorx_conn_id: str,
         sql: str,
         func_modify_data: Optional[Callable[[pl.DataFrame], pl.DataFrame]] = None,
+        # schema: pa.Schema = None,
         bucket: str,
         filename: str = "upload.parquet",
         gzip: bool = False,
@@ -44,6 +45,7 @@ class ConnectorXToGCSOperator(BaseOperator):
         self.connectorx_conn_id = connectorx_conn_id
         self.sql = sql
         self.func_modify_data = func_modify_data
+        # self.schema = schema
         self.bucket = bucket
         self.filename = filename
         self.gzip = gzip
@@ -71,11 +73,12 @@ class ConnectorXToGCSOperator(BaseOperator):
         self.log.info("Running query '%s", sql)
         hook = self._get_connectorx_hook()
 
-        if self.func_modify_data:
+        if hook.connection.conn_type == "google_cloud_platform":
+            df = hook.get_pandas_dataframe(sql)
+            return df
+        elif self.func_modify_data:
             df = hook.get_polars_dataframe(sql)
             return self.func_modify_data(df)
-        elif hook.connection.conn_type == "google_cloud_platform":
-            return hook.get_pandas_dataframe(sql)
         else:
             table = hook.get_arrow_table(sql)
             return table
@@ -88,8 +91,9 @@ class ConnectorXToGCSOperator(BaseOperator):
         if isinstance(data, pl.DataFrame):
             data = data.to_arrow()
         if isinstance(data, pd.DataFrame):
-            data = pa.Table.from_pandas(data)
-        # else:
+            data = pa.Table.from_pandas(
+                data  # , self.schema, preserve_index=False, safe=False
+            )
         pq.write_table(
             data,
             tmp_file_handle.name,
@@ -106,7 +110,7 @@ class ConnectorXToGCSOperator(BaseOperator):
     )
     def _upload_to_gcs(self, file_to_upload, filename):
         self.log.info("Uploading '%s' to GCS.", file_to_upload.name)
-        hook = self._get_gcs_hook_hook()
+        hook = self._get_gcs_hook()
         hook.upload(
             self.bucket,
             filename,
@@ -120,7 +124,7 @@ class ConnectorXToGCSOperator(BaseOperator):
             self.connectorx_hook = ConnectorXHook(self.connectorx_conn_id)
         return self.connectorx_hook
 
-    def _get_gcs_hook_hook(self):
+    def _get_gcs_hook(self):
         if not self.gcs_hook:
             self.gcs_hook = GCSHook(
                 gcp_conn_id=self.gcp_conn_id,

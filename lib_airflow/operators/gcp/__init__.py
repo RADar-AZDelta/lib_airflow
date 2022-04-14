@@ -2,6 +2,7 @@ from pkgutil import extend_path
 
 __path__ = extend_path(__path__, __name__)
 
+from .bigquery_to_other_gcs import BigQueryToOtherGCSOperator
 from .connectorx_change_tracking_upload_to_gcs import (
     ConnectorXChangeTrackingUploadToGCSOperator,
 )
