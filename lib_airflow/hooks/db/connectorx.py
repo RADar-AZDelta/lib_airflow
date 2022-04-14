@@ -107,6 +107,24 @@ class ConnectorXHook(BaseHook):
         )
         return df
 
+    def get_pandas_dataframe(
+        self,
+        query: Optional[Union[List[str], str]] = None,
+        protocol: str = "binary",
+        partition_on: Optional[str] = None,
+        partition_range: Optional[Tuple[int, int]] = None,
+        partition_num: Optional[int] = None,
+    ) -> pd.DataFrame:
+        df: pd.DataFrame = self.run(
+            query=query,  # type: ignore
+            return_type="pandas",
+            protocol=protocol,
+            partition_on=partition_on,
+            partition_range=partition_range,
+            partition_num=partition_num,
+        )
+        return df
+
     def test_connection(self):
         """Tests the connection by executing a select 1 query"""
         status, message = False, ""

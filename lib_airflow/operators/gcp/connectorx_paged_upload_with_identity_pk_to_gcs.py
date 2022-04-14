@@ -36,12 +36,12 @@ class ConnectorXPagedUploadWithIdentityPkToGCSOperator(ConnectorXToGCSOperator):
         identity_column: str,
         sql: str = """{% raw %}
 select *
-from {{ table }} with (nolock)
+from {{ table }}
 where {{ identity_column }} >= {{ current_identity_value_lower }} and {{ identity_column }} < {{ current_identity_value_upper }}
 {% endraw %}""",
         max_identity_sql: str = """{% raw %}
 select max({{ identity_column }}) as max_identity_value
-from {{ table }} with (nolock)
+from {{ table }}
 {% endraw %}""",
         start_identity: Union[int, str] = 0,
         page_size: Union[int, str] = 100000,

@@ -5,6 +5,7 @@ from tempfile import NamedTemporaryFile, _TemporaryFileWrapper
 from typing import Callable, Optional, Sequence, Tuple, Union
 
 import backoff
+import pandas as pd
 import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -66,27 +67,35 @@ class ConnectorXToGCSOperator(BaseOperator):
         max_time=600,
         max_tries=20,
     )
-    def _query(self, sql) -> Union[pa.Table, pl.DataFrame]:
+    def _query(self, sql) -> Union[pa.Table, pl.DataFrame, pd.DataFrame]:
         self.log.info("Running query '%s", sql)
         hook = self._get_connectorx_hook()
 
         if self.func_modify_data:
             df = hook.get_polars_dataframe(sql)
             return self.func_modify_data(df)
+        elif hook.connection.conn_type == "google_cloud_platform":
+            return hook.get_pandas_dataframe(sql)
         else:
             table = hook.get_arrow_table(sql)
             return table
 
     def _write_local_data_files(
-        self, data: Union[pa.Table, pl.DataFrame]
+        self, data: Union[pa.Table, pl.DataFrame, pd.DataFrame]
     ) -> _TemporaryFileWrapper:
         tmp_file_handle = NamedTemporaryFile(delete=True)
         self.log.info("Writing parquet files to: '%s'", tmp_file_handle.name)
         if isinstance(data, pl.DataFrame):
-            # data.write_parquet(tmp_file_handle.name)
             data = data.to_arrow()
+        if isinstance(data, pd.DataFrame):
+            data = pa.Table.from_pandas(data)
         # else:
-        pq.write_table(data, tmp_file_handle.name)
+        pq.write_table(
+            data,
+            tmp_file_handle.name,
+            coerce_timestamps="ms",
+            allow_truncated_timestamps=True,
+        )
         return tmp_file_handle
 
     @backoff.on_exception(

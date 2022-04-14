@@ -43,9 +43,9 @@ class ConnectorXChangeTrackingUploadToGCSOperator(ConnectorXToGCSOperator):
         sql: str = """{% raw %}
 SELECT ct.SYS_CHANGE_VERSION, ct.SYS_CHANGE_OPERATION, {{ pk_columns }}, {{ columns }}
 FROM CHANGETABLE(CHANGES {{ table }}, {{ last_synchronization_version }}) AS ct
-left outer join {{ table }} t with (nolock) on {{ join_on_clause }}
+left outer join {{ table }} t on {{ join_on_clause }}
 ORDER BY SYS_CHANGE_VERSION
-OFFSET {{ page * page_size }} ROWS
+OFFSET 0 ROWS
 FETCH NEXT {{ page_size }} ROWS ONLY
 {% endraw %}""",
         page_size: Union[int, str] = 100000,
@@ -96,55 +96,64 @@ where pk.is_primary_key = 1
             map(lambda pk: f"t.[{pk[0]}] = ct.[{pk[1]}]", pks),
         )
 
-        page = 0
-        returned_rows = self.page_size
-        while returned_rows == self.page_size:
-            template = jinja_env.from_string(self.sql)
-            sql = template.render(
-                pk_columns=", ".join(map(lambda pk: f"ct.[{pk[1]}]", pks)),
-                columns=", ".join(map(lambda column: f"t.[{column}]", self.columns)),
-                table=self.table,
-                last_synchronization_version=self.last_synchronization_version,
-                join_on_clause=join_on_clause,
-                page_size=self.page_size,
-                page=page,
+        # page = 0
+        # returned_rows = self.page_size
+        # last_synchronization_version = None
+
+        # while returned_rows == self.page_size:
+
+        template = jinja_env.from_string(self.sql)
+        sql = template.render(
+            pk_columns=", ".join(map(lambda pk: f"ct.[{pk[1]}]", pks)),
+            columns=", ".join(map(lambda column: f"t.[{column}]", self.columns)),
+            table=self.table,
+            last_synchronization_version=self.last_synchronization_version,
+            join_on_clause=join_on_clause,
+            page_size=self.page_size,
+            # page=page,
+        )
+
+        df = self._query(sql)
+        if isinstance(df, pa.Table):
+            df = pl.from_arrow(df)
+        returned_rows = len(df)
+        self.log.info(f"Rows fetched: {returned_rows}")
+
+        if returned_rows == 0:
+            return
+
+        last_synchronization_version = df["SYS_CHANGE_VERSION"].max()
+        df = df.unique(subset=change_tracking_pk_columns, keep="last")
+        for pk in (
+            pk for pk in pks if pk[0] != pk[1]
+        ):  # replace/remove the change_tracking_table pk's if table not equals change_tracking_table
+            df.replace(pk[0], df[pk[1]])
+            df.drop_in_place(pk[1])
+        df = df.with_column(
+            pl.when(pl.col("SYS_CHANGE_OPERATION") == "D")
+            .then(pl.lit(True))
+            .otherwise(pl.lit(False))
+            .alias("deleted")
+        )  # add deleted column
+        df.drop_in_place("SYS_CHANGE_OPERATION")
+        df.drop_in_place("SYS_CHANGE_VERSION")
+
+        with self._write_local_data_files(df) as file_to_upload:
+            file_to_upload.flush()
+            self._upload_to_gcs(
+                file_to_upload,
+                f"{self.bucket_dir}/{self.table}_{self.last_synchronization_version}.parquet",
             )
 
-            df = self._query(sql)
-            if isinstance(df, pa.Table):
-                df = pl.from_arrow(df)
-            returned_rows = len(df)
-            self.log.info(f"Rows fetched for page {page}: {returned_rows}")
+        # page += 1
+        if self.func_till_sys_change_version_loaded:
+            self.func_till_sys_change_version_loaded(
+                self.table, context, last_synchronization_version
+            )
 
-            last_synchronization_version = df["SYS_CHANGE_VERSION"].max()
-            df = df.unique(subset=change_tracking_pk_columns, keep="last")
-            for pk in (
-                pk for pk in pks if pk[0] != pk[1]
-            ):  # replace/remove the change_tracking_table pk's if table not equals change_tracking_table
-                df.replace(pk[0], df[pk[1]])
-                df.drop_in_place(pk[1])
-            df = df.with_column(
-                pl.when(pl.col("SYS_CHANGE_OPERATION") == "D")
-                .then(pl.lit(True))
-                .otherwise(pl.lit(False))
-                .alias("deleted")
-            )  # add deleted column
-            df.drop_in_place("SYS_CHANGE_OPERATION")
-            df.drop_in_place("SYS_CHANGE_VERSION")
-
-            if returned_rows > 0:
-                with self._write_local_data_files(df) as file_to_upload:
-                    file_to_upload.flush()
-                    self._upload_to_gcs(
-                        file_to_upload,
-                        f"{self.bucket_dir}/{self.table}_{self.last_synchronization_version}_{page}.parquet",
-                    )
-
-            page += 1
-            if self.func_till_sys_change_version_loaded:
-                self.func_till_sys_change_version_loaded(
-                    self.table, context, last_synchronization_version
-                )
+        context["task_instance"].xcom_push(
+            key="last_synchronization_version", value=last_synchronization_version
+        )
 
     def _get_change_tracking_table_pks(self):
         jinja_env = self.get_template_env()

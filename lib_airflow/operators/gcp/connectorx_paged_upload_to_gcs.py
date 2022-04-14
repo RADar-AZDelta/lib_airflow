@@ -5,6 +5,7 @@ from tempfile import NamedTemporaryFile, _TemporaryFileWrapper
 from typing import Callable, List, Optional, Sequence, Tuple, Union, cast
 
 import backoff
+import pandas as pd
 import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -32,22 +33,22 @@ class ConnectorXPagedUploadToGCSOperator(ConnectorXToGCSOperator):
         self,
         *,
         table: str,
-        pk_columns: Union[List[str], str],
+        pk_columns: Union[List[str], str] = None,
         sql: str = """{% raw %}
 {% if pk_columns %}
 with cte as (
 	select {{ pk_columns }}
-	from {{ table }} with (nolock)
+	from {{ table }}
 	ORDER BY {{ order_by }}
     OFFSET {{ page * page_size }} ROWS
     FETCH NEXT {{ page_size }} ROWS ONLY
 )
 select t.*
 from cte 
-inner join {{ table }} t with (nolock) on {{ join_clause }}
+inner join {{ table }} t on {{ join_clause }}
 {% else %}
 select *
-from {{ table }} with (nolock)
+from {{ table }} 
 ORDER BY {{ order_by }}
 OFFSET {{ page * page_size }} ROWS
 FETCH NEXT {{ page_size }} ROWS ONLY
@@ -70,13 +71,18 @@ FETCH NEXT {{ page_size }} ROWS ONLY
 
     def execute(self, context: "Context") -> None:
         jinja_env = self.get_template_env()
-        pk_columns = ", ".join(self.pk_columns)
-        order_by = ", ".join(self.pk_columns) or "1"
-        join_clause = " and ".join(
-            map(
-                lambda column: f"cte.[{column}] = t.[{column}]",
-                self.pk_columns,
+        pk_columns = ", ".join(self.pk_columns) if self.pk_columns else None
+        order_by = ", ".join(self.pk_columns) if self.pk_columns else "1"
+
+        join_clause = (
+            " and ".join(
+                map(
+                    lambda column: f"cte.[{column}] = t.[{column}]",
+                    self.pk_columns,
+                )
             )
+            if self.pk_columns
+            else None
         )
         page = cast(int, self.start_page) or 0
         returned_rows = self.page_size
@@ -98,6 +104,8 @@ FETCH NEXT {{ page_size }} ROWS ONLY
     def _paged_upload(self, sql: str, page: int) -> int:
         data = self._query(sql)
         if isinstance(data, pl.DataFrame):
+            returned_rows = len(data)
+        elif isinstance(data, pd.DataFrame):
             returned_rows = len(data)
         else:
             returned_rows = data.num_rows
