@@ -40,8 +40,21 @@ class BigQueryToOtherGCSOperator(BaseOperator):
         "BOOLEAN": pd.BooleanDtype(),
         "TIMESTAMP": pd.DatetimeTZDtype(tz="UTC"),
         "DATE": pd.DatetimeTZDtype(tz="UTC"),
-        "DATETIME": pd.StringDtype(),
+        "DATETIME": pd.DatetimeTZDtype(tz="UTC"),
     }
+    # _bq_to_arrow_data_type_mapping = {
+    #     "STRING": pa.string(),
+    #     "BYTES": pa.string(),
+    #     "INTEGER": pa.int64(),
+    #     "INT64": pa.int64(),
+    #     "NUMERIC": pa.float64(),
+    #     "FLOAT64": pa.float64(),
+    #     "FLOAT": pa.float64(),
+    #     "BOOLEAN": pa.bool_(),
+    #     "TIMESTAMP": pa.timestamp(unit="ms"),
+    #     "DATE": pa.date32(),
+    #     "DATETIME": pa.string(),
+    # }
 
     def __init__(
         self,
@@ -61,7 +74,7 @@ LIMIT {{ page_size }} OFFSET {{ page * page_size }}
         bucket_dir: str = "upload",
         func_page_loaded: Optional[Callable[[str, Context, int], None]] = None,
         bucket: str,
-        filename: str = "upload.parquet",
+        filename: str = "{% raw %}upload_{{ project }}_{{ dataset }}_{{ table }}_page_{{ page }}.parquet{% endraw %}",
         gzip: bool = False,
         delegate_to: Optional[str] = None,
         impersonation_chain: Optional[Union[str, Sequence[str]]] = None,
@@ -122,12 +135,21 @@ where table_name = '{{ table }}'
                 page_size=self.page_size,
                 page=page,
             )
-            returned_rows = self._paged_upload(sql, page, dtypes=dtypes)
+            template = jinja_env.from_string(self.filename)
+            filename = template.render(
+                project=self.project,
+                dataset=self.dataset,
+                table=self.table,
+                page=page,
+            )
+            returned_rows = self._paged_upload(sql, filename, page, dtypes=dtypes)
             page += 1
             if self.func_page_loaded:
                 self.func_page_loaded(self.table, context, page)
 
-    def _paged_upload(self, sql: str, page: int, dtypes: Dict[str, Any]) -> int:
+    def _paged_upload(
+        self, sql: str, filename: str, page: int, dtypes: Dict[str, Any]
+    ) -> int:
         df = self._query(sql, dtypes)
         returned_rows = len(df)
         self.log.info(f"Rows fetched for page {page}: {returned_rows}")
@@ -137,7 +159,7 @@ where table_name = '{{ table }}'
                 file_to_upload.flush()
                 self._upload_to_gcs(
                     file_to_upload,
-                    f"{self.bucket_dir}/{self.project}_{self.dataset}_{self.table}_{page}.parquet",
+                    f"{self.bucket_dir}/{filename}",
                 )
         return returned_rows
 
@@ -172,7 +194,7 @@ where table_name = '{{ table }}'
             project=bq_hook._get_field("project"),
             credentials=bq_hook._get_credentials(),
         )
-        df = bq_client.query(sql).to_dataframe(dtypes=dtypes)
+        df = bq_client.query(sql).to_dataframe(dtypes=dtypes, date_as_object=False)
         return df
 
     @backoff.on_exception(

@@ -1,10 +1,12 @@
 """MsSQL using pyodbc to GCS operator."""
 
+from datetime import date, datetime
 from decimal import Decimal
-from datetime import datetime
-from typing import Dict, Callable, Any
+from typing import Any, Callable, Dict
 
-from airflow.providers.google.cloud.transfers.sql_to_gcs import BaseSQLToGCSOperator
+import pyarrow as pa
+from airflow.providers.google.cloud.transfers.sql_to_gcs import \
+    BaseSQLToGCSOperator
 from airflow.providers.odbc.hooks.odbc import OdbcHook
 
 
@@ -30,24 +32,25 @@ class MSSQLOdbcToGCSOperator(BaseSQLToGCSOperator):
             )
     """
 
-    ui_color = '#e0a98c'
+    ui_color = "#e0a98c"
 
     """
     see https://docs.microsoft.com/en-us/sql/machine-learning/python/python-libraries-and-data-types?view=sql-server-ver15
     and https://cloud.google.com/bigquery/docs/reference/standard-sql/data-types#bytes_type
     """
     type_map = {
-        float: 'FLOAT', 
-        bytes: 'BYTES', 
-        bool: 'BOOL', 
-        str: 'STRING', 
-        datetime: 'DATETIME', 
-        int: 'INTEGER',
-        bytearray: 'BYTES',
-        Decimal: 'NUMERIC'
+        float: "FLOAT",
+        bytes: "BYTES",
+        bool: "BOOL",
+        str: "STRING",
+        datetime: "DATETIME",
+        date: "DATETIME",
+        int: "INTEGER",
+        bytearray: "BYTES",
+        Decimal: "NUMERIC",
     }
 
-    def __init__(self, *, odbc_conn_id='odbc_conn_id', **kwargs):
+    def __init__(self, *, odbc_conn_id="odbc_conn_id", **kwargs):
         super().__init__(**kwargs)
         self.odbc_conn_id = odbc_conn_id
 
@@ -59,7 +62,10 @@ class MSSQLOdbcToGCSOperator(BaseSQLToGCSOperator):
 
     def convert_types(self, schema, col_type_dict, row) -> list:
         """Convert values from DBAPI to output-friendly formats."""
-        return [self.convert_type(value, col_type_dict.get(name), name, row) for name, value in zip(schema, row)]
+        return [
+            self.convert_type(value, col_type_dict.get(name), name, row)
+            for name, value in zip(schema, row)
+        ]
 
     def query(self):
         """
@@ -77,9 +83,9 @@ class MSSQLOdbcToGCSOperator(BaseSQLToGCSOperator):
         see https://github.com/mkleehammer/pyodbc/wiki/Cursor#description
         """
         return {
-            'name': field[0].replace(" ", "_"),
-            'type': self.type_map.get(field[1], "STRING"),
-            'mode': "NULLABLE" if field[6] else None
+            "name": field[0].replace(" ", "_"),
+            "type": self.type_map.get(field[1], "STRING"),
+            "mode": "NULLABLE" if field[6] else None,
         }
 
     def convert_type(self, value, schema_type, name, row):
