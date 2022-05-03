@@ -78,7 +78,7 @@ from {{ table }}
                 current_identity_value_upper=current_identity_value_upper,
             )
             returned_rows = self._paged_upload(
-                sql, current_identity_value_lower // cast(int, self.page_size)
+                sql, current_identity_value_lower // cast(int, self.page_size), context
             )
             current_identity_value_lower += cast(int, self.page_size)
             if self.func_page_loaded:
@@ -88,8 +88,8 @@ from {{ table }}
                     current_identity_value_lower,
                 )
 
-    def _paged_upload(self, sql: str, page: int) -> int:
-        data = self._query(sql)
+    def _paged_upload(self, sql: str, page: int, context: "Context") -> int:
+        data = self._query(sql, context)
         if isinstance(data, pl.DataFrame):
             returned_rows = len(data)
         else:

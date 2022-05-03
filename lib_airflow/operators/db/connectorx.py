@@ -4,6 +4,7 @@ from typing import Callable, Optional, Sequence
 
 import polars as pl
 from airflow.models.baseoperator import BaseOperator
+from airflow.utils.context import Context
 from lib_airflow.hooks.db.connectorx import ConnectorXHook
 
 
@@ -19,7 +20,9 @@ class ConnectorXOperator(BaseOperator):
         *,
         connectorx_conn_id: str,
         sql: str,
-        func_modify_data: Optional[Callable[[pl.DataFrame], pl.DataFrame]] = None,
+        func_modify_data: Optional[
+            Callable[[pl.DataFrame, Context], pl.DataFrame]
+        ] = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -40,6 +43,6 @@ class ConnectorXOperator(BaseOperator):
         df = hook.get_polars_dataframe(query=self.sql)
 
         if self.func_modify_data:
-            df = self.func_modify_data(df)
+            df = self.func_modify_data(df, context)
 
         return df.write_json(row_oriented=True)

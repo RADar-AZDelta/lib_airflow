@@ -106,7 +106,7 @@ where pk.is_primary_key = 1
             page_size=self.page_size,
         )
 
-        df = self._query(sql)
+        df = self._query(sql, context)
         if isinstance(df, pa.Table):
             df = pl.from_arrow(df)
         returned_rows = len(df)

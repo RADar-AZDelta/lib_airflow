@@ -96,13 +96,13 @@ FETCH NEXT {{ page_size }} ROWS ONLY
                 page_size=self.page_size,
                 page=page,
             )
-            returned_rows = self._paged_upload(sql, page)
+            returned_rows = self._paged_upload(sql, page, context)
             page += 1
             if self.func_page_loaded:
                 self.func_page_loaded(self.table, context, page)
 
-    def _paged_upload(self, sql: str, page: int) -> int:
-        data = self._query(sql)
+    def _paged_upload(self, sql: str, page: int, context: "Context") -> int:
+        data = self._query(sql, context)
         if isinstance(data, pl.DataFrame):
             returned_rows = len(data)
         elif isinstance(data, pd.DataFrame):

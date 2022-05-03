@@ -11,6 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from airflow.models.baseoperator import BaseOperator
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
+from airflow.utils.context import Context
 from lib_airflow.hooks.db.connectorx import ConnectorXHook
 
 
@@ -30,7 +31,9 @@ class ConnectorXToGCSOperator(BaseOperator):
         *,
         connectorx_conn_id: str,
         sql: str,
-        func_modify_data: Optional[Callable[[pl.DataFrame], pl.DataFrame]] = None,
+        func_modify_data: Optional[
+            Callable[[pl.DataFrame, Context], pl.DataFrame]
+        ] = None,
         # schema: pa.Schema = None,
         bucket: str,
         filename: str = "upload.parquet",
@@ -58,7 +61,7 @@ class ConnectorXToGCSOperator(BaseOperator):
         self.connectorx_hook = None
 
     def execute(self, context: "Context"):
-        table = self._query(self.sql)
+        table = self._query(self.sql, context)
         with self._write_local_data_files(table) as file_to_upload:
             file_to_upload.flush()
             self._upload_to_gcs(file_to_upload, self.filename)
@@ -69,7 +72,9 @@ class ConnectorXToGCSOperator(BaseOperator):
         max_time=600,
         max_tries=20,
     )
-    def _query(self, sql) -> Union[pa.Table, pl.DataFrame, pd.DataFrame]:
+    def _query(
+        self, sql, context: "Context" = None
+    ) -> Union[pa.Table, pl.DataFrame, pd.DataFrame]:
         self.log.info("Running query '%s", sql)
         hook = self._get_connectorx_hook()
 
@@ -78,7 +83,7 @@ class ConnectorXToGCSOperator(BaseOperator):
             return df
         elif self.func_modify_data:
             df = hook.get_polars_dataframe(sql)
-            return self.func_modify_data(df)
+            return self.func_modify_data(df, context)
         else:
             table = hook.get_arrow_table(sql)
             return table
