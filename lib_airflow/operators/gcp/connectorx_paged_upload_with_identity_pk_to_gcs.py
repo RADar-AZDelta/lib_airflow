@@ -62,7 +62,7 @@ from {{ table }}
     def execute(self, context: "Context") -> None:
         jinja_env = self.get_template_env()
 
-        max_identity_value = self._get_max_identity_value()
+        max_identity_value = self._get_max_identity_value() or 0
         current_identity_value_lower = cast(int, self.start_identity) or 0
         while current_identity_value_lower < (
             max_identity_value + cast(int, self.page_size)
