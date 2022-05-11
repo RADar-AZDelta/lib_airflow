@@ -14,3 +14,5 @@ from .connectorx_paged_upload_with_identity_pk_to_gcs import (
 from .connectorx_to_gcs import ConnectorXToGCSOperator
 from .gcs_to_bigquery import GCSToBigQueryOperator
 from .mssql_odbc_to_gcs import MSSQLOdbcToGCSOperator
+from .query_and_upload_to_bq import QueryAndUploadToBigQueryOperator
+from .upload_to_bq import UploadToBigQueryOperator
