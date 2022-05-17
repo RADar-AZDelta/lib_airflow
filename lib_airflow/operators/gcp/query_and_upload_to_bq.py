@@ -1,5 +1,6 @@
 from typing import Any, Sequence
 
+import backoff
 import polars as pl
 from lib_airflow.hooks.db.connectorx import ConnectorXHook
 from lib_airflow.operators.gcp.upload_to_bq import UploadToBigQueryOperator
@@ -27,6 +28,12 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
         df = self._query(sql)
         return self._upload_parquet(df, object_name, table_metadata)
 
+    @backoff.on_exception(
+        backoff.expo,
+        (Exception),
+        max_time=600,
+        max_tries=20,
+    )
     def _query(
         self,
         sql: str,
