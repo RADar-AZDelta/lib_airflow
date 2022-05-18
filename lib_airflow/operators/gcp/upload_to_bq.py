@@ -42,7 +42,7 @@ class UploadToBigQueryOperator(BaseOperator):
 
         return columns
 
-    def _merge_bq(self, sql, job_id: str):
+    def _run_bq_job(self, sql, job_id: str):
         hook = self._get_bq_hook()
         configuration = {
             "query": {
@@ -51,7 +51,7 @@ class UploadToBigQueryOperator(BaseOperator):
             }
         }
         job_id = re.sub(r"[:\-+.]", "_", job_id)
-        hook.insert_job(
+        return hook.insert_job(
             configuration=configuration, job_id=job_id, retry=BQ_DEFAULT_RETRY
         )
 
@@ -60,6 +60,8 @@ class UploadToBigQueryOperator(BaseOperator):
         source_uris: List[str],
         destination_project_dataset_table: str,
         cluster_fields: Optional[List[str]] = None,
+        write_disposition="WRITE_TRUNCATE",
+        schema_update_options=None,
     ):
         bq_hook = self._get_bq_hook()
 
@@ -67,9 +69,10 @@ class UploadToBigQueryOperator(BaseOperator):
             destination_project_dataset_table=destination_project_dataset_table,
             source_uris=source_uris,
             source_format="PARQUET",
-            write_disposition="WRITE_TRUNCATE",
+            write_disposition=write_disposition,
             cluster_fields=cluster_fields,
             autodetect=True,
+            schema_update_options=schema_update_options,
         )
 
     def _check_parquet(self, bucket_object: str):
