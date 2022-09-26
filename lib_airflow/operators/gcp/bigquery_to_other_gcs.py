@@ -1,12 +1,12 @@
+# Copyright 2022 RADar-AZDelta
+# SPDX-License-Identifier: gpl3+
+
 from tempfile import NamedTemporaryFile, _TemporaryFileWrapper
 from typing import Any, Callable, Dict, Optional, Sequence, Union, cast
 
 import backoff
 import numpy as np
 import pandas as pd
-import polars as pl
-import pyarrow as pa
-import pyarrow.parquet as pq
 from airflow.models.baseoperator import BaseOperator
 from airflow.providers.google.cloud.hooks.bigquery import BigQueryHook
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
@@ -15,6 +15,8 @@ from google.cloud import bigquery
 
 
 class BigQueryToOtherGCSOperator(BaseOperator):
+    """Does a query on the Bigquery of one project (of one organisation) and stores the result in a Cloud Storage bucket of another project (of another organisation)"""
+
     template_fields: Sequence[str] = (
         "bucket",
         "impersonation_chain",
@@ -80,6 +82,25 @@ LIMIT {{ page_size }} OFFSET {{ page * page_size }}
         impersonation_chain: Optional[Union[str, Sequence[str]]] = None,
         **kwargs,
     ) -> None:
+        """Constructor
+
+        Args:
+            bigquery_conn_id (str): BigQuery connection ID
+            cs_conn_id (str): Cloud Storage connection ID
+            project (str): GCP project ID that holds the Bigquery
+            dataset (str): BigQuery dataset ID
+            table (str): BigQuery table name
+            bucket (str): Name of the bucket
+            sql (str, optional): The paged query.
+            start_page (Union[int, str], optional): Page to start from. Defaults to 0.
+            page_size (Union[int, str], optional): Number of rows to fetch in each page. Defaults to 100000.
+            bucket_dir (str, optional): The bucket dir to store the paged upload Parquet files. Defaults to "upload".
+            func_page_loaded (Optional[Callable[[str, Context, int], None]], optional): Function that can be called every time a page is uploaded. Defaults to None.
+            filename (str, optional): The name of the uploaded Parquet file.
+            gzip (bool, optional): Compress local file before upload (Parquet files are already zipped). Defaults to False.
+            delegate_to (Optional[str], optional): This performs a task on one host with reference to other hosts. Defaults to None.
+            impersonation_chain (Optional[Union[str, Sequence[str]]], optional): This is the optional service account to impersonate using short term credentials. Defaults to None.
+        """
         super().__init__(**kwargs)
 
         self.bigquery_conn_id = bigquery_conn_id
@@ -103,6 +124,12 @@ LIMIT {{ page_size }} OFFSET {{ page * page_size }}
         self.bq_hook = None
 
     def execute(self, context: "Context") -> None:
+        """Execute the operator.
+        Do the paged SQL query and upload the results as Parquet to Cloud Storage.
+
+        Args:
+            context (Context):  Jinja2 template context for task rendering.
+        """
         jinja_env = self.get_template_env()
 
         sql = """
@@ -150,6 +177,17 @@ where table_name = '{{ table }}'
     def _paged_upload(
         self, sql: str, filename: str, page: int, dtypes: Dict[str, Any]
     ) -> int:
+        """Do the paged SQL query and upload the results as Parquet to Cloud Storage.
+
+        Args:
+            sql (str): The paged SQL query
+            filename (str): The bucket filename to upload the parquet file to
+            page (int): The current page to execute and upload
+            dtypes (Dict[str, Any]): A dictionary of column names pandas ``dtype``s. The provided ``dtype`` is used when constructing the series for the column specified. Otherwise, the default pandas behavior is used.
+
+        Returns:
+            int: _description_
+        """
         df = self._query(sql, dtypes)
         returned_rows = len(df)
         self.log.info(f"Rows fetched for page {page}: {returned_rows}")
@@ -164,19 +202,18 @@ where table_name = '{{ table }}'
         return returned_rows
 
     def _write_local_data_files(self, df: pd.DataFrame) -> _TemporaryFileWrapper:
+        """Writes the pandas dataframe to a temporary Parquet file
+
+        Args:
+            df (pd.DataFrame): The pandas dataframe
+
+        Returns:
+            _TemporaryFileWrapper: The temporary file
+        """
         tmp_file_handle = NamedTemporaryFile(delete=True)
         self.log.info("Writing parquet files to: '%s'", tmp_file_handle.name)
 
         df.to_parquet(tmp_file_handle.name, engine="pyarrow")
-        # data = pa.Table.from_pandas(
-        #     df, self.schema, preserve_index=False, safe=False
-        # )
-        # pq.write_table(
-        #     data,
-        #     tmp_file_handle.name,
-        #     coerce_timestamps="ms",
-        #     allow_truncated_timestamps=True,
-        # )
         return tmp_file_handle
 
     @backoff.on_exception(
@@ -186,6 +223,15 @@ where table_name = '{{ table }}'
         max_tries=20,
     )
     def _query(self, sql, dtypes: Dict[str, Any]) -> pd.DataFrame:
+        """Do a query into a pandas dataframe
+
+        Args:
+            sql (str): The SQL query
+            dtypes (Dict[str, Any]): A dictionary of column names pandas ``dtype``s. The provided ``dtype`` is used when constructing the series for the column specified. Otherwise, the default pandas behavior is used.
+
+        Returns:
+            pd.DataFrame: The pandas DataFrame holding the query results
+        """
         self.log.info("Running query '%s", sql)
 
         bq_hook = BigQueryHook(gcp_conn_id="gcp_awell")
@@ -204,6 +250,12 @@ where table_name = '{{ table }}'
         max_tries=20,
     )
     def _upload_to_gcs(self, file_to_upload, filename):
+        """Upload file to Cloud Storage
+
+        Args:
+            file_to_upload (str): Name that the uploaded file will have in the bucket
+            filename (str): File to upload
+        """
         self.log.info("Uploading '%s' to GCS.", file_to_upload.name)
         hook = self._get_gcs_hook()
         hook.upload(
@@ -214,7 +266,12 @@ where table_name = '{{ table }}'
             gzip=self.gzip,
         )
 
-    def _get_gcs_hook(self):
+    def _get_gcs_hook(self) -> GCSHook:
+        """Get the Cloud Storage Hook
+
+        Returns:
+            GCSHook: The Cloud Storage Hook
+        """
         if not self.gcs_hook:
             self.gcs_hook = GCSHook(
                 gcp_conn_id=self.cs_conn_id,
@@ -223,7 +280,12 @@ where table_name = '{{ table }}'
             )
         return self.gcs_hook
 
-    def _get_bq_hook(self):
+    def _get_bq_hook(self) -> BigQueryHook:
+        """Get the BigQuery Hook
+
+        Returns:
+            BigQueryHook: The BigQuery Hook
+        """
         if not self.bq_hook:
             self.bq_hook = BigQueryHook(gcp_conn_id=self.bigquery_conn_id)
         return self.bq_hook

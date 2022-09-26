@@ -1,22 +1,20 @@
+# Copyright 2022 RADar-AZDelta
+# SPDX-License-Identifier: gpl3+
+
 """ConnectorX to GCS operator."""
 
 import functools as ft
-import time
-from tempfile import NamedTemporaryFile, _TemporaryFileWrapper
-from typing import Callable, List, Optional, Sequence, Tuple, Union, cast
+from typing import Callable, List, Optional, Sequence, Tuple, Union
 
-import backoff
 import polars as pl
 import pyarrow as pa
-import pyarrow.parquet as pq
-from airflow.models.baseoperator import BaseOperator
-from airflow.providers.google.cloud.hooks.gcs import GCSHook
 from airflow.utils.context import Context
-from lib_airflow.hooks.db import ConnectorXHook
 from lib_airflow.operators.gcp.connectorx_to_gcs import ConnectorXToGCSOperator
 
 
 class ConnectorXChangeTrackingUploadToGCSOperator(ConnectorXToGCSOperator):
+    """Does an incremental upload to Cloud Stoarage of a MSSQL table that has [Change Tracking](https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/about-change-tracking-sql-server?view=sql-server-ver16) enabled"""
+
     template_fields: Sequence[str] = (
         "bucket",
         "impersonation_chain",
@@ -64,6 +62,21 @@ where pk.is_primary_key = 1
         ] = None,
         **kwargs,
     ) -> None:
+        """Constructor
+
+        Args:
+            table (str): The name of the database table
+            pk_columns (Union[List[str], str], optional): List of the primary key columns. Defaults to None.
+            columns (Union[List[str], str]): List of table columns.
+            last_synchronization_version (Union[int, str]): The last synchronised version
+            change_tracking_table (Optional[str], optional): Name of the change tracking table. Defaults to None.
+            sql (str, optional): Query to retrieve all changes on the table since the last synchronised version.
+            page_size (Union[int, str], optional): Number of rows to fetch in each page. Defaults to 100000.
+            pk_columns_sql (str, optional): Query to retrieve the list of primary key columns.
+            bucket_dir (str, optional): The bucket dir to store the paged upload Parquet files. Defaults to "upload".
+            func_till_sys_change_version_loaded (Optional[ Callable[[str, Context, int], None] ], optional):
+            Function that can be used to store the last synchronised version, so that it can be used in the next run. Defaults to None.
+        """
         super().__init__(sql=sql, **kwargs)
 
         self.table = table
@@ -77,6 +90,13 @@ where pk.is_primary_key = 1
         self.func_till_sys_change_version_loaded = func_till_sys_change_version_loaded
 
     def execute(self, context: "Context") -> None:
+        """Executes the operator.
+        Executes the query the get all the changes of a table since the specified last synchronised version.
+        Uploads the results as Parquet to Cloud Storage.
+
+        Args:
+            context (Context):  Jinja2 template context for task rendering.
+        """
         jinja_env = self.get_template_env()
 
         change_tracking_pk_columns = None
@@ -147,7 +167,12 @@ where pk.is_primary_key = 1
             key="last_synchronization_version", value=last_synchronization_version
         )
 
-    def _get_change_tracking_table_pks(self):
+    def _get_change_tracking_table_pks(self) -> Any:
+        """Gets the primary keys from the change tracking table using the provided pk_columns_sql SQL.
+
+        Returns:
+            Any: The change tracking table primary keys.
+        """
         jinja_env = self.get_template_env()
         template = jinja_env.from_string(self.pk_columns_sql)
         sql = template.render(

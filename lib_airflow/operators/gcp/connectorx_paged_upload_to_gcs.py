@@ -1,22 +1,19 @@
+# Copyright 2022 RADar-AZDelta
+# SPDX-License-Identifier: gpl3+
+
 """ConnectorX to GCS operator."""
 
-import time
-from tempfile import NamedTemporaryFile, _TemporaryFileWrapper
-from typing import Callable, List, Optional, Sequence, Tuple, Union, cast
+from typing import Callable, List, Optional, Sequence, Union, cast
 
-import backoff
 import pandas as pd
 import polars as pl
-import pyarrow as pa
-import pyarrow.parquet as pq
-from airflow.models.baseoperator import BaseOperator
-from airflow.providers.google.cloud.hooks.gcs import GCSHook
 from airflow.utils.context import Context
-from lib_airflow.hooks.db import ConnectorXHook
 from lib_airflow.operators.gcp.connectorx_to_gcs import ConnectorXToGCSOperator
 
 
 class ConnectorXPagedUploadToGCSOperator(ConnectorXToGCSOperator):
+    """Do a paged upload of a table to Cloud Storage."""
+
     template_fields: Sequence[str] = (
         "bucket",
         "impersonation_chain",
@@ -60,6 +57,17 @@ FETCH NEXT {{ page_size }} ROWS ONLY
         func_page_loaded: Optional[Callable[[str, Context, int], None]] = None,
         **kwargs,
     ) -> None:
+        """_summary_
+
+        Args:
+            table (str): The name of the database table
+            pk_columns (Union[List[str], str], optional): List of the primary key columns. Defaults to None.
+            sql (str, optional): The paged query.
+            start_page (Union[int, str], optional): Page to start from. Defaults to 0.
+            page_size (Union[int, str], optional): Number of rows to fetch in each page. Defaults to 100000.
+            bucket_dir (str, optional): The bucket dir to store the paged upload Parquet files. Defaults to "upload".
+            func_page_loaded (Optional[Callable[[str, Context, int], None]], optional): Function that can be called every time a page is uploaded. Defaults to None.
+        """
         super().__init__(sql=sql, **kwargs)
 
         self.table = table
@@ -70,6 +78,12 @@ FETCH NEXT {{ page_size }} ROWS ONLY
         self.func_page_loaded = func_page_loaded
 
     def execute(self, context: "Context") -> None:
+        """Execute the operator.
+        Do the paged SQL query and upload the results as Parquet to Cloud Storage.
+
+        Args:
+            context (Context):  Jinja2 template context for task rendering.
+        """
         jinja_env = self.get_template_env()
         pk_columns = ", ".join(self.pk_columns) if self.pk_columns else None
         order_by = ", ".join(self.pk_columns) if self.pk_columns else "1"
@@ -102,6 +116,16 @@ FETCH NEXT {{ page_size }} ROWS ONLY
                 self.func_page_loaded(self.table, context, page)
 
     def _paged_upload(self, sql: str, page: int, context: "Context") -> int:
+        """Executes the page Query and uploads the results to Cloud Storage
+
+        Args:
+            sql (str): The paged SQL query
+            page (int): The current page to execute and upload
+            context (Context):  Jinja2 template context for task rendering.
+
+        Returns:
+            int: The number of uploaded rows in the current page
+        """
         data = self._query(sql, context)
         if isinstance(data, pl.DataFrame):
             returned_rows = len(data)

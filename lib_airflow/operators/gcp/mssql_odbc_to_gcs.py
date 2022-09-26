@@ -1,3 +1,6 @@
+# Copyright 2022 RADar-AZDelta
+# SPDX-License-Identifier: gpl3+
+
 """MsSQL using pyodbc to GCS operator."""
 
 from datetime import date, datetime
@@ -5,8 +8,7 @@ from decimal import Decimal
 from typing import Any, Callable, Dict
 
 import pyarrow as pa
-from airflow.providers.google.cloud.transfers.sql_to_gcs import \
-    BaseSQLToGCSOperator
+from airflow.providers.google.cloud.transfers.sql_to_gcs import BaseSQLToGCSOperator
 from airflow.providers.odbc.hooks.odbc import OdbcHook
 
 
@@ -50,11 +52,21 @@ class MSSQLOdbcToGCSOperator(BaseSQLToGCSOperator):
         Decimal: "NUMERIC",
     }
 
-    def __init__(self, *, odbc_conn_id="odbc_conn_id", **kwargs):
+    def __init__(self, *, odbc_conn_id="odbc_conn_id", **kwargs) -> None:
+        """Constructor
+
+        Args:
+            odbc_conn_id (str, optional): The id of the connection. Defaults to "odbc_conn_id".
+        """
         super().__init__(**kwargs)
         self.odbc_conn_id = odbc_conn_id
 
-    def get_db_conn(self):
+    def get_db_conn(self) -> Any:
+        """Get the database connection object.
+
+        Returns:
+            Any: PyODBC connection object
+        """
         self.log.info("Starting ODBC hook with connection id '%s'", self.odbc_conn_id)
         mssqlodbc = OdbcHook(odbc_conn_id=self.odbc_conn_id)
         conn = mssqlodbc.get_conn()
@@ -67,10 +79,11 @@ class MSSQLOdbcToGCSOperator(BaseSQLToGCSOperator):
             for name, value in zip(schema, row)
         ]
 
-    def query(self):
-        """
-        Queries MSSQL and returns a cursor of results.
-        :return: mssql cursor
+    def query(self) -> Any:
+        """Queries MSSQL and returns a cursor of results.
+
+        Returns:
+            Any: PyODBC cursor
         """
         self.log.info("Executing query: %s", self.sql.strip())
         conn = self.get_db_conn()

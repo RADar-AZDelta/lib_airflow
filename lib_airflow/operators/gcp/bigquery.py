@@ -1,3 +1,6 @@
+# Copyright 2022 RADar-AZDelta
+# SPDX-License-Identifier: gpl3+
+
 from typing import Sequence
 
 from airflow.providers.google.cloud.operators.bigquery import (
@@ -6,6 +9,8 @@ from airflow.providers.google.cloud.operators.bigquery import (
 
 
 class BigQueryCreateEmptyTableOperator(BigQueryCreateEmptyTableBaseOperator):
+    """BigQueryCreateEmptyTableOperator with additional template fields"""
+
     template_fields: Sequence[str] = (
         "dataset_id",
         "table_id",

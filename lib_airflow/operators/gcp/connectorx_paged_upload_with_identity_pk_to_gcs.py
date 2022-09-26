@@ -1,21 +1,18 @@
+# Copyright 2022 RADar-AZDelta
+# SPDX-License-Identifier: gpl3+
+
 """ConnectorX to GCS operator."""
 
-import time
-from tempfile import NamedTemporaryFile, _TemporaryFileWrapper
-from typing import Callable, List, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Callable, Optional, Sequence, Union, cast
 
-import backoff
 import polars as pl
-import pyarrow as pa
-import pyarrow.parquet as pq
-from airflow.models.baseoperator import BaseOperator
-from airflow.providers.google.cloud.hooks.gcs import GCSHook
 from airflow.utils.context import Context
-from lib_airflow.hooks.db import ConnectorXHook
-from lib_airflow.operators.gcp.connectorx_to_gcs import ConnectorXToGCSOperator
+from lib_airflow.operators.gcp import ConnectorXToGCSOperator
 
 
 class ConnectorXPagedUploadWithIdentityPkToGCSOperator(ConnectorXToGCSOperator):
+    """Do a paged upload of a table that has a primary key that is auto incremented (identity property)."""
+
     template_fields: Sequence[str] = (
         "bucket",
         "impersonation_chain",
@@ -49,6 +46,18 @@ from {{ table }}
         func_page_loaded: Optional[Callable[[str, Context, int], None]] = None,
         **kwargs,
     ) -> None:
+        """Constructor
+
+        Args:
+            table (str): Name of the table
+            identity_column (str): Name of the auto-incremented primary key
+            sql (str, optional): The paged query.
+            max_identity_sql (str, optional): Query that gets the largest value of the primary key, currently in the database.
+            start_identity (Union[int, str], optional): Identity to start from. Defaults to 0.
+            page_size (Union[int, str], optional): Number of rows to fetch in each page. Defaults to 100000.
+            bucket_dir (str, optional): The bucket dir to store the paged upload Parquet files. Defaults to "upload".
+            func_page_loaded (Optional[Callable[[str, Context, int], None]], optional): Function that can be called every time a page is uploaded. Defaults to None.
+        """
         super().__init__(sql=sql, **kwargs)
 
         self.table = table
@@ -60,6 +69,12 @@ from {{ table }}
         self.func_page_loaded = func_page_loaded
 
     def execute(self, context: "Context") -> None:
+        """Execute the operator.
+        Dd the paged SQL query and upload the results as Parquet to Cloud Storage.
+
+        Args:
+            context (Context):  Jinja2 template context for task rendering.
+        """
         jinja_env = self.get_template_env()
 
         max_identity_value = self._get_max_identity_value() or 0
@@ -89,6 +104,16 @@ from {{ table }}
                 )
 
     def _paged_upload(self, sql: str, page: int, context: "Context") -> int:
+        """Executes the page Query and uploads the results to Cloud Storage
+
+        Args:
+            sql (str): The paged SQL query
+            page (int): The current page to execute and upload
+            context (Context):  Jinja2 template context for task rendering.
+
+        Returns:
+            int: The number of uploaded rows in the current page
+        """
         data = self._query(sql, context)
         if isinstance(data, pl.DataFrame):
             returned_rows = len(data)
@@ -104,7 +129,12 @@ from {{ table }}
                 )
         return returned_rows
 
-    def _get_max_identity_value(self):
+    def _get_max_identity_value(self) -> Any:
+        """Executes the query that gets the largest value of the primary key, currently in the database..
+
+        Returns:
+            Any: The largest value, currently in our database, of our auto incremented primary key
+        """
         jinja_env = self.get_template_env()
         template = jinja_env.from_string(self.max_identity_sql)
         sql = template.render(

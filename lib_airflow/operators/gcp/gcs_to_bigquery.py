@@ -1,10 +1,16 @@
+# Copyright 2022 RADar-AZDelta
+# SPDX-License-Identifier: gpl3+
+
 from typing import Sequence
 
-from airflow.providers.google.cloud.transfers.gcs_to_bigquery import \
-    GCSToBigQueryOperator as GCSToBigQueryBaseOperator
+from airflow.providers.google.cloud.transfers.gcs_to_bigquery import (
+    GCSToBigQueryOperator as GCSToBigQueryBaseOperator,
+)
 
 
 class GCSToBigQueryOperator(GCSToBigQueryBaseOperator):
+    """GCSToBigQueryOperator with additional template fields"""
+
     template_fields: Sequence[str] = (
         "bucket",
         "source_objects",

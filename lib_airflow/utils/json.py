@@ -1,3 +1,6 @@
+# Copyright 2022 RADar-AZDelta
+# SPDX-License-Identifier: gpl3+
+
 import json
 import re
 from datetime import datetime
@@ -11,6 +14,7 @@ class AirflowJsonDecoder(json.JSONDecoder):
     """
     Custom JSON decoder for Airflow, that correctly decodes iso8601 dates.
     """
+
     def __init__(self, *args, **kwargs):
         if kwargs["object_hook"]:
             super().__init__(*args, **kwargs)
@@ -20,8 +24,8 @@ class AirflowJsonDecoder(json.JSONDecoder):
     @classmethod
     def object_hook(cls, dct):
         """
-        object_hook is an optional function that will be called with the result of any object literal decoded (a dict). 
-        The return value of object_hook will be used instead of the dict. 
+        object_hook is an optional function that will be called with the result of any object literal decoded (a dict).
+        The return value of object_hook will be used instead of the dict.
         This feature can be used to implement custom decoders.
         """
         for k, v in dct.items():
