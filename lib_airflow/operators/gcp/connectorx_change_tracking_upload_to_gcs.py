@@ -9,7 +9,8 @@ from typing import Any, Callable, List, Optional, Sequence, Tuple, Union
 import polars as pl
 import pyarrow as pa
 from airflow.utils.context import Context
-from lib_airflow.operators.gcp.connectorx_to_gcs import ConnectorXToGCSOperator
+
+from .connectorx_to_gcs import ConnectorXToGCSOperator
 
 
 class ConnectorXChangeTrackingUploadToGCSOperator(ConnectorXToGCSOperator):

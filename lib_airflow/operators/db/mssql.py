@@ -9,7 +9,8 @@ from airflow.providers.microsoft.mssql.operators.mssql import (
 
 
 class MsSqlOperator(MsSqlBaseOperator):
-     """MsSqlOperator with additional template fields"""
+    """MsSqlOperator with additional template fields"""
+
     template_fields: Sequence[str] = ("sql", "parameters")
 
     def __init__(

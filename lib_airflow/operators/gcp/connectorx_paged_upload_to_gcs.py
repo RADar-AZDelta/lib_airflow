@@ -8,7 +8,8 @@ from typing import Callable, List, Optional, Sequence, Union, cast
 import pandas as pd
 import polars as pl
 from airflow.utils.context import Context
-from lib_airflow.operators.gcp.connectorx_to_gcs import ConnectorXToGCSOperator
+
+from .connectorx_to_gcs import ConnectorXToGCSOperator
 
 
 class ConnectorXPagedUploadToGCSOperator(ConnectorXToGCSOperator):
