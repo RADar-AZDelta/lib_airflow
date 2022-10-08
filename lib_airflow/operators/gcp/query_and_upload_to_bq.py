@@ -6,7 +6,8 @@ from typing import Any, Sequence
 import backoff
 import polars as pl
 from lib_airflow.hooks.db.connectorx import ConnectorXHook
-from lib_airflow.operators.gcp.upload_to_bq import UploadToBigQueryOperator
+
+from .upload_to_bq import UploadToBigQueryOperator
 
 
 class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
