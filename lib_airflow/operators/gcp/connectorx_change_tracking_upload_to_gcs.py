@@ -4,7 +4,7 @@
 """ConnectorX to GCS operator."""
 
 import functools as ft
-from typing import Callable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, List, Optional, Sequence, Tuple, Union
 
 import polars as pl
 import pyarrow as pa
