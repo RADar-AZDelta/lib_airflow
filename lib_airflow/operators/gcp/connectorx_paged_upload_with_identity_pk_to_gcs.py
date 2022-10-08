@@ -7,7 +7,8 @@ from typing import Any, Callable, Optional, Sequence, Union, cast
 
 import polars as pl
 from airflow.utils.context import Context
-from lib_airflow.operators.gcp import ConnectorXToGCSOperator
+
+from .connectorx_to_gcs import ConnectorXToGCSOperator
 
 
 class ConnectorXPagedUploadWithIdentityPkToGCSOperator(ConnectorXToGCSOperator):
