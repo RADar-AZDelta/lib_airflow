@@ -10,8 +10,8 @@ import pyarrow.parquet as pq
 from airflow.models.baseoperator import BaseOperator
 from airflow.providers.google.cloud.hooks.bigquery import BigQueryHook
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
-from google.cloud.bigquery.retry import DEFAULT_RETRY as BQ_DEFAULT_RETRY
 from google.cloud.bigquery import CopyJob, ExtractJob, LoadJob, QueryJob
+from google.cloud.bigquery.retry import DEFAULT_RETRY as BQ_DEFAULT_RETRY
 
 BigQueryJob = Union[CopyJob, QueryJob, LoadJob, ExtractJob]
 
@@ -65,11 +65,20 @@ class UploadToBigQueryOperator(BaseOperator):
 
         return columns
 
-    def _run_bq_job(self, sql, job_id: str) -> BigQueryJob:
-        """_summary_
+    def _delete_bq_table(self, dataset_table: str) -> None:
+        """Delete a BigQuery table
 
         Args:
-            sql (_type_): The query
+            dataset_table (str): The identifier of the job
+        """
+        hook = self._get_bq_hook()
+        hook.delete_table(table_id=dataset_table)
+
+    def _run_bq_job(self, sql: str, job_id: str) -> BigQueryJob:
+        """Run a BigQuery job
+
+        Args:
+            sql (str): The query
             job_id (str): The identifier of the job
 
         Returns:
