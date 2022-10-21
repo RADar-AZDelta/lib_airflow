@@ -7,7 +7,7 @@ setup(
     name="lib_airflow",
     version="0.0.1",
     author="RADar-AZDelta",
-    author_email="innovatie@azdelta.be",
+    author_email="radar@azdelta.be",
     description="Custom Airflow operators and hooks",
     long_description=_long_description,
     long_description_content_type="text/markdown",
