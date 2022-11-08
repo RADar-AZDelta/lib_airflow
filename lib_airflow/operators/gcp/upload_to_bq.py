@@ -6,6 +6,7 @@ from tempfile import NamedTemporaryFile, _TemporaryFileWrapper
 from typing import Any, Callable, List, Optional, Sequence, Union
 
 import polars as pl
+import pyarrow as pa
 import pyarrow.parquet as pq
 from airflow.models.baseoperator import BaseOperator
 from airflow.providers.google.cloud.hooks.bigquery import BigQueryHook
@@ -27,7 +28,7 @@ class UploadToBigQueryOperator(BaseOperator):
         gcp_cs_conn_id: str,
         gcp_bq_conn_id: str,
         func_modify_data: Optional[
-            Callable[[pl.DataFrame, Optional[Any]], pl.DataFrame]
+            Callable[[pl.DataFrame | pa.Table, Optional[Any]], pl.DataFrame | pa.Table]
         ] = None,
         **kwargs,
     ) -> None:
@@ -143,7 +144,7 @@ class UploadToBigQueryOperator(BaseOperator):
 
     def _upload_parquet(
         self,
-        df: pl.DataFrame,
+        df: pl.DataFrame | pa.Table,
         object_name: str,
         table_metadata: Any = None,
     ) -> int:
@@ -168,7 +169,9 @@ class UploadToBigQueryOperator(BaseOperator):
                 self._upload_to_gcs(file_to_upload, object_name)
         return returned_rows
 
-    def _write_local_data_files(self, df: pl.DataFrame) -> _TemporaryFileWrapper:
+    def _write_local_data_files(
+        self, df: pl.DataFrame | pa.Table
+    ) -> _TemporaryFileWrapper:
         """Write the DataFrame to a temporary Parquet file
 
         Args:
@@ -179,14 +182,18 @@ class UploadToBigQueryOperator(BaseOperator):
         """
         tmp_file_handle = NamedTemporaryFile(delete=True)
         self.log.info("Writing parquet files to: '%s'", tmp_file_handle.name)
-        table = df.to_arrow()
 
-        pq.write_table(
-            table,
-            tmp_file_handle.name,
-            coerce_timestamps="ms",
-            allow_truncated_timestamps=True,
-        )
+        if isinstance(df, pl.DataFrame):
+            # df = df.to_arrow() # convert to an Arrow Table
+            df.write_parquet(file=tmp_file_handle.name, compression="snappy")
+        else:
+            pq.write_table(
+                table=df,
+                where=tmp_file_handle.name,
+                compression="snappy",
+                coerce_timestamps="ms",
+                allow_truncated_timestamps=True,
+            )
         return tmp_file_handle
 
     def _upload_to_gcs(
