@@ -106,7 +106,7 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
                         send_email(
                             to=self.to_email_on_error,
                             subject=f"AIRFLOW ERROR in dag '{self.dag_id}' for table '{table['table_name']}'",
-                            html_content=str_error,
+                            html_content=str_error.replace("\n", "<br />"),
                         )
                 except:
                     pass
