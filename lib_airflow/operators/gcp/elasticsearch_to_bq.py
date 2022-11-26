@@ -20,7 +20,7 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
         self,
         elastic_url: str,
         api_key_var_id: str,
-        destination_project_dataset: str,
+        destination_dataset: str,
         indexes: List[str],
         es_batch_size=1000,
         pq_page_size=100000,
@@ -34,7 +34,7 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
         self.es_batch_size = es_batch_size
         self.pq_page_size = pq_page_size
         self.bucket_dir = bucket_dir
-        self.destination_project_dataset = destination_project_dataset
+        self.destination_dataset = destination_dataset
 
     def execute(self, context):
         api_key = Variable.get("awell_api_key")
@@ -141,6 +141,6 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
                 source_uris=[
                     f"gs://{self.bucket}/{self.bucket_dir}/{table_name}/full/{table_name}_*.parquet"
                 ],
-                destination_project_dataset_table=f"{self.destination_project_dataset}.{table_name}",
+                destination_project_dataset_table=f"{self.destination_dataset}.{table_name}",
                 # cluster_fields=
             )

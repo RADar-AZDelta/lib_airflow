@@ -27,6 +27,7 @@ class UploadToBigQueryOperator(BaseOperator):
         bucket: str,
         gcp_cs_conn_id: str,
         gcp_bq_conn_id: str,
+        gcp_location: str = "EU",
         func_modify_data: Optional[
             Callable[[pl.DataFrame | pa.Table, Optional[Any]], pl.DataFrame | pa.Table]
         ] = None,
@@ -45,6 +46,7 @@ class UploadToBigQueryOperator(BaseOperator):
         self.bucket = bucket
         self.gcp_cs_conn_id = gcp_cs_conn_id
         self.gcp_bq_conn_id = gcp_bq_conn_id
+        self.gcp_location = gcp_location
 
         self._gcs_hook = None
         self._bq_hook = None
@@ -232,5 +234,7 @@ class UploadToBigQueryOperator(BaseOperator):
         if not self._bq_hook:
             self._bq_hook = BigQueryHook(
                 gcp_conn_id=self.gcp_bq_conn_id,
+                location=self.gcp_location,
+                use_legacy_sql=False,
             )
         return self._bq_hook

@@ -3,10 +3,9 @@ import uuid
 from typing import Dict, List, Optional, Sequence, Tuple, cast
 
 import backoff
+import google.cloud.bigquery as bq
 import polars as pl
-from airflow.providers.odbc.hooks.odbc import OdbcHook
 from airflow.utils.context import Context
-from lib_airflow.hooks.db.connectorx import ConnectorXHook
 
 from ...model.changetracking import AirflowSyncChangeTrackingVersion
 from ...model.dbmetadata import Table
@@ -32,11 +31,26 @@ class ChangeTrackinToBigQueryOperator(FullUploadToBigQueryOperator):
 
     def __init__(
         self,
-        # tables: List[ChangeTrackingTable],
-        connectorx_airflow_conn_id: str,
-        odbc_airflow_conn_id: str,
-        sql_current_sync_version: str,
-        sql_upsert_current_sync_version: str,
+        bookkeeper_dataset: str,
+        bookkeeper_table: str,
+        sql_current_sync_version: str = """{% raw %}
+select *
+from {{ bookkeeper_dataset }}.{{ bookkeeper_table }}
+where database = '{{ database_name }}' and schema = '{{ schema_name }}' and table = '{{ table_name }}'
+{% endraw %}""",
+        sql_upsert_current_sync_version: str = """{% raw %}
+MERGE {{ bookkeeper_dataset }}.{{ bookkeeper_table }} AS target
+USING (SELECT @database as database, @schema as schema, @table as table, @version as version, @bulk_upload_page as bulk_upload_page, @current_identity_value as current_identity_value, @current_single_nvarchar_pk as current_single_nvarchar_pk) AS source
+ON (target.database = source.database and target.schema = source.schema and target.table = source.table)
+    WHEN MATCHED THEN
+        UPDATE SET version = source.version,
+            bulk_upload_page = source.bulk_upload_page,
+            current_identity_value = source.current_identity_value,
+            current_single_nvarchar_pk = source.current_single_nvarchar_pk
+    WHEN NOT MATCHED THEN
+        INSERT (database, schema, table, version, bulk_upload_page, current_identity_value, current_single_nvarchar_pk)
+        VALUES (source.database, source.schema, source.table, source.version, source.bulk_upload_page, source.current_identity_value, source.current_single_nvarchar_pk);
+{% endraw %}""",
         sql_change_tracking_current_version: str = "select CHANGE_TRACKING_CURRENT_VERSION() as version",
         sql_incremental_upload: str = """{% raw %}
 SELECT ct.SYS_CHANGE_VERSION, ct.SYS_CHANGE_OPERATION, {{ pk_columns }}{% if columns %}, {{ columns }}{% endif %}
@@ -72,9 +86,8 @@ where pk.is_primary_key = 1
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
-        # self.tables = tables
-        self.connectorx_airflow_conn_id = connectorx_airflow_conn_id
-        self.odbc_airflow_conn_id = odbc_airflow_conn_id
+        self.bookkeeper_dataset = bookkeeper_dataset
+        self.bookkeeper_table = bookkeeper_table
         self.sql_change_tracking_current_version = sql_change_tracking_current_version
         self.sql_current_sync_version = sql_current_sync_version
         self.sql_upsert_current_sync_version = sql_upsert_current_sync_version
@@ -351,87 +364,84 @@ where pk.is_primary_key = 1
             table_metadata=table,
         )
 
-        if self._check_parquet(  # IS THIS NECESSARY??????
-            f"{self.bucket_dir}/{table['table_name']}/full/{table['table_name']}_",
-        ):
-            self._load_parquets_in_bq(
-                source_uris=[
-                    f"gs://{self.bucket}/{self.bucket_dir}/{table['table_name']}/incremental/{table['table_name']}_{last_synchronization_version}.parquet"
-                ],
-                destination_project_dataset_table=f"{self.destination_project_dataset}._incremental_{table['table_name']}",
-                cluster_fields=self._get_cluster_fields(table),
+        self._load_parquets_in_bq(
+            source_uris=[
+                f"gs://{self.bucket}/{self.bucket_dir}/{table['table_name']}/incremental/{table['table_name']}_{last_synchronization_version}.parquet"
+            ],
+            destination_project_dataset_table=f"{self.destination_dataset}._incremental_{table['table_name']}",
+            cluster_fields=self._get_cluster_fields(table),
+        )
+
+        template = jinja_env.from_string(self.sql_bq_merge)
+
+        insert_columns = ", ".join(
+            map(
+                lambda column: f"`{column}`",
+                self._rename_bigquery_column_names(table["pks"]),
             )
-
-            template = jinja_env.from_string(self.sql_bq_merge)
-
-            insert_columns = ", ".join(
-                map(
-                    lambda column: f"`{column}`",
-                    self._rename_bigquery_column_names(table["pks"]),
-                )
+        )
+        insert_values = ", ".join(
+            map(
+                lambda column: f"`{column}`",
+                self._rename_bigquery_column_names(table["pks"]),
             )
-            insert_values = ", ".join(
-                map(
-                    lambda column: f"`{column}`",
-                    self._rename_bigquery_column_names(table["pks"]),
-                )
-            )
+        )
 
-            if table["columns"]:
-                insert_columns = (
-                    insert_columns
-                    + ", "
-                    + ", ".join(
-                        map(
-                            lambda column: f"`{column}`",
-                            self._rename_bigquery_column_names(table["columns"]),
-                        )
-                    )
-                )
-                insert_values = (
-                    insert_values
-                    + ", "
-                    + ", ".join(
-                        map(
-                            lambda column: f"`{column}`",
-                            self._rename_bigquery_column_names(table["columns"]),
-                        )
-                    )
-                )
-
-            sql = template.render(
-                dataset=self.destination_project_dataset,
-                table=table["table_name"],
-                condition_clause=" and ".join(
+        if table["columns"]:
+            insert_columns = (
+                insert_columns
+                + ", "
+                + ", ".join(
                     map(
-                        lambda column: f"t.`{column}` = s.`{column}`",
-                        self._rename_bigquery_column_names(table["pks"]),
-                    )
-                ),
-                update_clause=", ".join(
-                    map(
-                        lambda column: f"t.`{column}` = s.`{column}`",
+                        lambda column: f"`{column}`",
                         self._rename_bigquery_column_names(table["columns"]),
                     )
-                ),
-                insert_columns=insert_columns,
-                insert_values=insert_values,
+                )
             )
-            self._run_bq_job(
-                sql,
-                job_id=f"airflow_{table['schema_name']}_{table['table_name']}_{str(uuid.uuid4())}",
-            )
-            self._delete_bq_table(
-                dataset_table=f"{self.destination_project_dataset}._incremental_{table['table_name']}",
+            insert_values = (
+                insert_values
+                + ", "
+                + ", ".join(
+                    map(
+                        lambda column: f"`{column}`",
+                        self._rename_bigquery_column_names(table["columns"]),
+                    )
+                )
             )
 
-            self._upsert_current_sync_version(
-                table,
-                self.change_tracking_current_version,
-                current_sync_version=None,
-                page=None,
-                current_identity=None,
-            )
+        sql = template.render(
+            dataset=self.destination_dataset,
+            table=table["table_name"],
+            condition_clause=" and ".join(
+                map(
+                    lambda column: f"t.`{column}` = s.`{column}`",
+                    self._rename_bigquery_column_names(table["pks"]),
+                )
+            ),
+            update_clause=", ".join(
+                map(
+                    lambda column: f"t.`{column}` = s.`{column}`",
+                    self._rename_bigquery_column_names(table["columns"]),
+                )
+            ),
+            insert_columns=insert_columns,
+            insert_values=insert_values,
+        )
+        self._run_bq_job(
+            sql,
+            job_id=f"airflow_{table['schema_name']}_{table['table_name']}_{str(uuid.uuid4())}",
+        )
+        self._delete_bq_table(
+            dataset_table=f"{self.destination_dataset}._incremental_{table['table_name']}",
+        )
+
+        self._upsert_current_sync_version(
+            table,
+            self.change_tracking_current_version,
+            current_sync_version=None,
+            page=None,
+            current_identity=None,
+        )
 
     @backoff.on_exception(
         backoff.expo,
@@ -460,26 +470,38 @@ where pk.is_primary_key = 1
     ):
         jinja_env = self.get_template_env()
 
-        hook = self._get_airflow_upsert_hook()
-        template = jinja_env.from_string(self.sql_upsert_current_sync_version)
-        sql = template.render()
         if not version:
             sync_version = (
                 current_sync_version["version"] if current_sync_version else None
             )
             version = sync_version or change_tracking_current_version
-        hook.run(
-            sql,
-            parameters=[
-                table["database_name"],
-                table["schema_name"],
-                table["table_name"],
-                version,
-                page,
-                current_identity,
-                current_single_nvarchar_pk,
+
+        hook = self._get_bq_hook()
+        template = jinja_env.from_string(self.sql_upsert_current_sync_version)
+        query = template.render(
+            bookkeeper_dataset=self.bookkeeper_dataset,
+            bookkeeper_table=self.bookkeeper_table,
+        )
+        client = hook.get_client()
+        job_config = bq.QueryJobConfig(
+            query_parameters=[
+                bq.ScalarQueryParameter("database", "STRING", table["database_name"]),
+                bq.ScalarQueryParameter("schema", "STRING", table["schema_name"]),
+                bq.ScalarQueryParameter("table", "STRING", table["table_name"]),
+                bq.ScalarQueryParameter("version", "INTEGER", version),
+                bq.ScalarQueryParameter("bulk_upload_page", "INTEGER", page),
+                bq.ScalarQueryParameter(
+                    "current_identity_value", "INTEGER", current_identity
+                ),
+                bq.ScalarQueryParameter(
+                    "current_single_nvarchar_pk", "STRING", current_single_nvarchar_pk
+                ),
             ],
         )
+        query_job = client.query(
+            query, job_config=job_config, location=self.gcp_location
+        )
+        result = query_job.result()
 
     @backoff.on_exception(
         backoff.expo,
@@ -492,20 +514,25 @@ where pk.is_primary_key = 1
     ) -> Optional[AirflowSyncChangeTrackingVersion]:
         jinja_env = self.get_template_env()
 
-        hook = ConnectorXHook(connectorx_conn_id=self.connectorx_airflow_conn_id)
+        hook = self._get_bq_hook()
         template = jinja_env.from_string(self.sql_current_sync_version)
         query = template.render(
-            {
-                "params": {
-                    "database_name": table["database_name"],
-                    "schema_name": table["schema_name"],
-                    "table_name": table["table_name"],
-                }
-            }
+            bookkeeper_dataset=self.bookkeeper_dataset,
+            bookkeeper_table=self.bookkeeper_table,
+            database_name=table["database_name"],
+            schema_name=table["schema_name"],
+            table_name=table["table_name"],
         )
-        df = hook.get_polars_dataframe(query=query)
-        list = df.to_dicts()
-        return cast(AirflowSyncChangeTrackingVersion, list[0]) if list else None
+        client = hook.get_client()
+        job_config = bq.QueryJobConfig(
+            query_parameters=[],
+        )
+        query_job = client.query(
+            query, job_config=job_config, location=self.gcp_location
+        )
+        rows = query_job.result()
+        records = [dict(row.items()) for row in rows]
+        return cast(AirflowSyncChangeTrackingVersion, records[0]) if records else None
 
     @backoff.on_exception(
         backoff.expo,
@@ -518,14 +545,16 @@ where pk.is_primary_key = 1
         df = hook.get_polars_dataframe(query=self.sql_change_tracking_current_version)
         return df["version"][0]
 
-    def _get_airflow_upsert_hook(self) -> OdbcHook:
-        if not self._airflow_upsert_hook:
-            self._airflow_upsert_hook = OdbcHook(odbc_conn_id=self.odbc_airflow_conn_id)
-        return self._airflow_upsert_hook
+    # def _get_bookkeeper_upsert_hook(self) -> OdbcHook:
+    #     if not self._airflow_upsert_hook:
+    #         self._airflow_upsert_hook = OdbcHook(
+    #             odbc_conn_id=self.odbc_bookkeeper_conn_id
+    #         )
+    #     return self._airflow_upsert_hook
 
-    def _get_airflow_hook(self) -> ConnectorXHook:
-        if not self._airflow_hook:
-            self._airflow_hook = ConnectorXHook(
-                connectorx_conn_id=self.connectorx_airflow_conn_id
-            )
-        return self._airflow_hook
+    # def _get_bookkeeper_hook(self) -> ConnectorXHook:
+    #     if not self._airflow_hook:
+    #         self._airflow_hook = ConnectorXHook(
+    #             connectorx_conn_id=self.connectorx_bookkeeper_conn_id
+    #         )
+    #     return self._airflow_hook

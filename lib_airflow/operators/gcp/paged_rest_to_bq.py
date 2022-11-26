@@ -18,7 +18,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         http_conn_id: str,
         auth_token: str | None,
         endpoints: dict[str, Tuple[str, Any]] | str,
-        destination_project_dataset: str,
+        destination_dataset: str,
         func_create_merge_statement: Callable[
             [str, str, str, Any, pa.Table, jinja2.Environment], str
         ],
@@ -65,7 +65,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         self.page_size = page_size
         self.upload_every_nbr_of_pages = upload_after_nbr_of_pages
         self.bucket_dir = bucket_dir
-        self.destination_project_dataset = destination_project_dataset
+        self.destination_dataset = destination_dataset
 
     def execute(self, context: "Context"):
         http = HttpHook(self.http_method, self.http_conn_id)
@@ -177,12 +177,12 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
 
         self._load_parquets_in_bq(
             source_uris=[f"gs://{self.bucket}/{object_name}"],
-            destination_project_dataset_table=f"{self.destination_project_dataset}._incremental_{endpoint_name}",
+            destination_project_dataset_table=f"{self.destination_dataset}._incremental_{endpoint_name}",
             cluster_fields=cluster_fields,
         )
 
         sql = self.func_create_merge_statement(
-            self.destination_project_dataset,
+            self.destination_dataset,
             endpoint_name,
             endpoint_url,
             endpoint_data,
@@ -191,10 +191,10 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         )
         self._run_bq_job(
             sql,
-            job_id=f"airflow_{self.destination_project_dataset}_{endpoint_name}_{str(uuid.uuid4())}",
+            job_id=f"airflow_{self.destination_dataset}_{endpoint_name}_{str(uuid.uuid4())}",
         )
         self._delete_bq_table(
-            dataset_table=f"{self.destination_project_dataset}._incremental_{endpoint_name}",
+            dataset_table=f"{self.destination_dataset}._incremental_{endpoint_name}",
         )
 
         if self.func_batch_uploaded:

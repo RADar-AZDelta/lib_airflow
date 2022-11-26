@@ -24,7 +24,7 @@ class FullUploadToBigQueryOperator(QueryAndUploadToBigQueryOperator):
         # tables: List[ChangeTrackingTable],
         chunk: int,
         func_get_tables: Callable[[str, int], List[Table]],
-        destination_project_dataset: str,
+        destination_dataset: str,
         sql_full_upload: str = """{% raw %}
 {% if pk_columns %}
 with cte as (
@@ -82,14 +82,14 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
         )
         self.page_size = page_size
         self.bucket_dir = bucket_dir
-        self.destination_project_dataset = destination_project_dataset
+        self.destination_dataset = destination_dataset
         self.to_email_on_error = to_email_on_error
 
         self._db_hook = None
 
     def execute(self, context):
         self._before_execute(context)
-        tables = self.func_get_tables(self.connectorx_db_conn_id, self.chunk)
+        tables = self.func_get_tables(self.connectorx_source_db_conn_id, self.chunk)
         for table in tables:
             str_error = None
             try:
@@ -196,7 +196,7 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
                 source_uris=[
                     f"gs://{self.bucket}/{self.bucket_dir}/{table['table_name']}/full/{table['table_name']}_*.parquet"
                 ],
-                destination_project_dataset_table=f"{self.destination_project_dataset}.{table['table_name']}",
+                destination_project_dataset_table=f"{self.destination_dataset}.{table['table_name']}",
                 cluster_fields=self._get_cluster_fields(table),
             )
 
@@ -249,7 +249,7 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
                 source_uris=[
                     f"gs://{self.bucket}/{self.bucket_dir}/{table['table_name']}/full/{table['table_name']}_*.parquet"
                 ],
-                destination_project_dataset_table=f"{self.destination_project_dataset}.{table['table_name']}",
+                destination_project_dataset_table=f"{self.destination_dataset}.{table['table_name']}",
                 cluster_fields=self._get_cluster_fields(table),
             )
 
@@ -299,7 +299,7 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
                 source_uris=[
                     f"gs://{self.bucket}/{self.bucket_dir}/{table['table_name']}/full/{table['table_name']}_*.parquet"
                 ],
-                destination_project_dataset_table=f"{self.destination_project_dataset}.{table['table_name']}",
+                destination_project_dataset_table=f"{self.destination_dataset}.{table['table_name']}",
                 cluster_fields=self._get_cluster_fields(table),
             )
 

@@ -29,15 +29,15 @@ class HixDwhToBigQueryOperator(FullUploadToBigQueryOperator):
 
     def __init__(
         self,
-        connectorx_airflow_conn_id: str,
-        odbc_airflow_conn_id: str,
+        connectorx_bookkeeper_conn_id: str,
+        odbc_bookkeeper_conn_id: str,
         sql_last_synced_table_cycle_id: str,
         sql_upsert_last_synced_table_cycle_id: str,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
-        self.connectorx_airflow_conn_id = connectorx_airflow_conn_id
-        self.odbc_airflow_conn_id = odbc_airflow_conn_id
+        self.connectorx_bookkeeper_conn_id = connectorx_bookkeeper_conn_id
+        self.odbc_bookkeeper_conn_id = odbc_bookkeeper_conn_id
         self.sql_last_synced_table_cycle_id = sql_last_synced_table_cycle_id
         self.sql_upsert_last_synced_table_cycle_id = (
             sql_upsert_last_synced_table_cycle_id
@@ -78,7 +78,7 @@ class HixDwhToBigQueryOperator(FullUploadToBigQueryOperator):
         return df["last_cycle_id"][0]
 
     def _get_table_cycle_id(self, table: Table) -> int:
-        sql = f"select max(HdwCycleId) as max_cycleid from {self.destination_project_dataset}.{table['table_name']}"
+        sql = f"select max(HdwCycleId) as max_cycleid from {self.destination_dataset}.{table['table_name']}"
         job_id = f"max_cycleid_{table['schema_name']}_{table['table_name']}_{str(uuid.uuid4())}"
 
         try:
@@ -152,7 +152,7 @@ where {{ pk_name }} >= {{ pk_value }};
                 source_uris=[
                     f"gs://{self.bucket}/{self.bucket_dir}/{table['table_name']}/full/{table['table_name']}_*.parquet"
                 ],
-                destination_project_dataset_table=f"{self.destination_project_dataset}.{table['table_name']}",
+                destination_project_dataset_table=f"{self.destination_dataset}.{table['table_name']}",
                 # cluster_fields=self._get_cluster_fields(table), # "Clustering is not supported on non-orderable column 'HdwLinkSha1Key' of type 'STRUCT<list ARRAY<STRUCT<item INT64>>>'"
                 write_disposition="WRITE_TRUNCATE",
             )
@@ -218,7 +218,7 @@ inner join {{ schema }}.{{ table }} t on t.{{ pk_name }} = cte.{{ pk_name }} and
                 source_uris=[
                     f"gs://{self.bucket}/{self.bucket_dir}/{table['table_name']}/cycle_{cycle_id}/{table['table_name']}_*.parquet"
                 ],
-                destination_project_dataset_table=f"{self.destination_project_dataset}.{table['table_name']}",
+                destination_project_dataset_table=f"{self.destination_dataset}.{table['table_name']}",
                 # cluster_fields=self._get_cluster_fields(table), # "Clustering is not supported on non-orderable column 'HdwLinkSha1Key' of type 'STRUCT<list ARRAY<STRUCT<item INT64>>>'"
                 write_disposition="WRITE_APPEND",
                 schema_update_options=["ALLOW_FIELD_ADDITION"],
@@ -226,13 +226,15 @@ inner join {{ schema }}.{{ table }} t on t.{{ pk_name }} = cte.{{ pk_name }} and
 
     def _get_airflow_upsert_hook(self) -> OdbcHook:
         if not self._airflow_upsert_hook:
-            self._airflow_upsert_hook = OdbcHook(odbc_conn_id=self.odbc_airflow_conn_id)
+            self._airflow_upsert_hook = OdbcHook(
+                odbc_conn_id=self.odbc_bookkeeper_conn_id
+            )
         return self._airflow_upsert_hook
 
     def _get_airflow_hook(self) -> ConnectorXHook:
         if not self._airflow_hook:
             self._airflow_hook = ConnectorXHook(
-                connectorx_conn_id=self.connectorx_airflow_conn_id
+                connectorx_conn_id=self.connectorx_bookkeeper_conn_id
             )
         return self._airflow_hook
 
@@ -245,7 +247,7 @@ inner join {{ schema }}.{{ table }} t on t.{{ pk_name }} = cte.{{ pk_name }} and
     def _get_last_synced_table_cycle_id(self, table: Table) -> Optional[int]:
         jinja_env = self.get_template_env()
 
-        hook = ConnectorXHook(connectorx_conn_id=self.connectorx_airflow_conn_id)
+        hook = ConnectorXHook(connectorx_conn_id=self.connectorx_bookkeeper_conn_id)
         template = jinja_env.from_string(self.sql_last_synced_table_cycle_id)
         query = template.render(
             {

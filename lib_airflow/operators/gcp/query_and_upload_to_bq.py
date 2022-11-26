@@ -18,16 +18,16 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
 
     def __init__(
         self,
-        connectorx_db_conn_id: str,
+        connectorx_source_db_conn_id: str,
         **kwargs,
     ) -> None:
         """Constructor
 
         Args:
-            connectorx_db_conn_id (str): The ConnectorX connection id
+            connectorx_source_db_conn_id (str): The ConnectorX connection id
         """
         super().__init__(**kwargs)
-        self.connectorx_db_conn_id = connectorx_db_conn_id
+        self.connectorx_source_db_conn_id = connectorx_source_db_conn_id
 
         self._db_hook = None
 
@@ -81,6 +81,6 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
         """
         if not self._db_hook:
             self._db_hook = ConnectorXHook(
-                connectorx_conn_id=self.connectorx_db_conn_id
+                connectorx_conn_id=self.connectorx_source_db_conn_id
             )
         return self._db_hook

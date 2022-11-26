@@ -238,7 +238,7 @@ where table_name = '{{ table }}'
 
         bq_client = bigquery.Client(
             project=bq_hook._get_field("project"),
-            credentials=bq_hook._get_credentials(),
+            credentials=bq_hook.get_credentials(),
         )
         df = bq_client.query(sql).to_dataframe(dtypes=dtypes, date_as_object=False)
         return df
