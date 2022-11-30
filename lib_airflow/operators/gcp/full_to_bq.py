@@ -69,6 +69,8 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
         page_size: Union[int, str] = 100000,
         bucket_dir: str = "upload",
         to_email_on_error: list[str] | Iterable[str] | None = None,
+        func_before_execute_table: Callable[[Table, Context], None] | None = None,
+        func_after_execute_table: Callable[[Table, Context], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -84,16 +86,25 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
         self.bucket_dir = bucket_dir
         self.destination_dataset = destination_dataset
         self.to_email_on_error = to_email_on_error
+        self.func_before_execute_table = func_before_execute_table
+        self.func_after_execute_table = func_after_execute_table
 
         self._db_hook = None
 
     def execute(self, context):
         self._before_execute(context)
-        tables = self.func_get_tables(self.connectorx_source_db_conn_id, self.chunk)
+        tables: List[Table] = self.func_get_tables(
+            self.connectorx_source_db_conn_id, self.chunk
+        )
+
         for table in tables:
             str_error = None
             try:
+                if self.func_before_execute_table:
+                    self.func_before_execute_table(table, context)
                 self.execute_table(table, context)
+                if self.func_after_execute_table:
+                    self.func_after_execute_table(table, context)
             except Exception as e:
                 str_error = traceback.format_exc()
                 self.log.error(
@@ -200,7 +211,7 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
                 cluster_fields=self._get_cluster_fields(table),
             )
 
-        self._full_upload_done(table)
+        self._full_upload_done(table, context)
 
     def _full_upload_with_identity_pk(
         self,
@@ -226,6 +237,7 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
                 page_size=page_size,
             )
             df = self._query(sql)
+            df = self._check_dataframe_for_bigquery_safe_column_names(df)
             returned_rows = self._upload_parquet(
                 df,
                 object_name=f"{self.bucket_dir}/{table['table_name']}/full/{table['table_name']}_{page}.parquet",
@@ -253,7 +265,7 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
                 cluster_fields=self._get_cluster_fields(table),
             )
 
-        self._full_upload_with_identity_pk_done(table)
+        self._full_upload_with_identity_pk_done(table, context)
 
     def _full_upload_with_single_nvarchar_pk(
         self,
@@ -279,6 +291,7 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
                 page_size=page_size,
             )
             df = self._query(sql)
+            df = self._check_dataframe_for_bigquery_safe_column_names(df)
             returned_rows = self._upload_parquet(
                 df,
                 object_name=f"{self.bucket_dir}/{table['table_name']}/full/{table['table_name']}_{page}.parquet",
@@ -303,7 +316,7 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
                 cluster_fields=self._get_cluster_fields(table),
             )
 
-        self._full_upload_with_single_nvarchar_pk_done(table)
+        self._full_upload_with_single_nvarchar_pk_done(table, context)
 
     def _full_upload_get_start_page(self, table: Table) -> int:
         return 0
@@ -311,7 +324,7 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
     def _full_upload_page_uploaded(self, table: Table, page: int) -> None:
         return None
 
-    def _full_upload_done(self, table: Table) -> None:
+    def _full_upload_done(self, table: Table, context: Context) -> None:
         return None
 
     def _full_upload_with_identity_pk_get_start_identity(
@@ -326,7 +339,9 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
     ) -> None:
         return None
 
-    def _full_upload_with_identity_pk_done(self, table: Table) -> None:
+    def _full_upload_with_identity_pk_done(
+        self, table: Table, context: Context
+    ) -> None:
         return None
 
     def _full_upload_with_single_nvarchar_pk_get_start_pk(
@@ -341,7 +356,9 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
     ) -> None:
         return None
 
-    def _full_upload_with_single_nvarchar_pk_done(self, table: Table) -> None:
+    def _full_upload_with_single_nvarchar_pk_done(
+        self, table: Table, context: Context
+    ) -> None:
         return None
 
     def _get_cluster_fields(self, table: Table) -> List[str]:

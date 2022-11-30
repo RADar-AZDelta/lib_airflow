@@ -1,7 +1,8 @@
 # Copyright 2022 RADar-AZDelta
 # SPDX-License-Identifier: gpl3+
 
-from typing import Any, Sequence
+import re
+from typing import Any, List, Sequence
 
 import backoff
 import polars as pl
@@ -30,6 +31,7 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
         self.connectorx_source_db_conn_id = connectorx_source_db_conn_id
 
         self._db_hook = None
+        self._re_pattern_bigquery_safe_column_names = re.compile(r"[^_0-9a-zA-Z]+")
 
     def _query_to_parquet_and_upload(
         self,
@@ -49,6 +51,7 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
             int: Number of uploaded rows
         """
         df = self._query(sql)
+        df = self._check_dataframe_for_bigquery_safe_column_names(df)
         return self._upload_parquet(df, object_name, table_metadata)
 
     @backoff.on_exception(
@@ -84,3 +87,39 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
                 connectorx_conn_id=self.connectorx_source_db_conn_id
             )
         return self._db_hook
+
+    def _check_dataframe_for_bigquery_safe_column_names(self, df: pl.DataFrame):
+        column_names = df.columns
+        safe_column_names = self._generate_bigquery_safe_column_names(column_names)
+
+        for idx, safe_column_name in enumerate(safe_column_names):
+            column_name = column_names[idx]
+            if safe_column_name != column_name:
+                df = df.with_column(df[column_name].alias(safe_column_name)).drop(
+                    column_name
+                )
+        return df
+
+    def _generate_bigquery_safe_column_names(
+        self, column_names: List[str]
+    ) -> List[str]:
+        safe_column_names = column_names.copy()
+
+        for idx, column_name in enumerate(column_names):
+            # Fields must contain only letters, numbers, and underscores, start with a letter or underscore, and be at most 300 characters long
+            safe_column_name = self._re_pattern_bigquery_safe_column_names.sub(
+                "_", column_name
+            )
+            if safe_column_name[0].isdigit():
+                safe_column_name = f"_{safe_column_name}"
+            while (
+                safe_column_name
+                in safe_column_names[:idx] + safe_column_names[idx + 1 :]
+            ):
+                safe_column_name = f"_{safe_column_name}"
+            safe_column_name = safe_column_name[:300]
+
+            if column_name != safe_column_name:
+                safe_column_names[idx] = safe_column_name
+
+        return safe_column_names

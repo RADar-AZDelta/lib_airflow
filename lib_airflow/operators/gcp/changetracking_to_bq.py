@@ -34,7 +34,7 @@ class ChangeTrackinToBigQueryOperator(FullUploadToBigQueryOperator):
         bookkeeper_dataset: str,
         bookkeeper_table: str,
         sql_current_sync_version: str = """{% raw %}
-select *
+select database, schema, table, page_size, change_tracking_table, disabled, version, bulk_upload_page, current_identity_value, current_single_nvarchar_pk
 from {{ bookkeeper_dataset }}.{{ bookkeeper_table }}
 where database = '{{ database_name }}' and schema = '{{ schema_name }}' and table = '{{ table_name }}'
 {% endraw %}""",
@@ -180,27 +180,64 @@ where pk.is_primary_key = 1
         )
 
     def _full_upload_page_uploaded(self, table: Table, page: int) -> None:
-        current_sync_version = self.current_sync_versions[
+        current_sync_version: Optional[
+            AirflowSyncChangeTrackingVersion
+        ] = self.current_sync_versions[
             f"{table['database_name']}_{table['schema_name']}_{table['table_name']}"
         ]
-        self._upsert_current_sync_version(
-            table,
-            self.change_tracking_current_version,
-            current_sync_version,
-            page=page,
-        )
 
-    def _full_upload_done(self, table: Table) -> None:
-        current_sync_version = self.current_sync_versions[
+        if not current_sync_version:
+            current_sync_version = {
+                "database": table["database_name"],
+                "schema": table["schema_name"],
+                "table": table["table_name"],
+                "page_size": None,
+                "change_tracking_table": None,
+                "disabled": None,
+                "version": None,
+                "bulk_upload_page": None,
+                "current_identity_value": None,
+                "current_single_nvarchar_pk": None,
+            }
+
+        current_sync_version["bulk_upload_page"] = page
+        self._upsert_current_sync_version(current_sync_version)
+        self.current_sync_versions[
+            f"{table['database_name']}_{table['schema_name']}_{table['table_name']}"
+        ] = current_sync_version
+
+    def _full_upload_done(
+        self,
+        table: Table,
+        context: Context,
+    ) -> None:
+        current_sync_version: Optional[
+            AirflowSyncChangeTrackingVersion
+        ] = self.current_sync_versions[
             f"{table['database_name']}_{table['schema_name']}_{table['table_name']}"
         ]
-        self._upsert_current_sync_version(
-            table,
-            self.change_tracking_current_version,
-            current_sync_version,
-            page=None,
-            current_identity=None,
-        )
+        if not current_sync_version:
+            current_sync_version = {
+                "database": table["database_name"],
+                "schema": table["schema_name"],
+                "table": table["table_name"],
+                "page_size": None,
+                "change_tracking_table": None,
+                "disabled": None,
+                "version": None,
+                "bulk_upload_page": None,
+                "current_identity_value": None,
+                "current_single_nvarchar_pk": None,
+            }
+
+        current_sync_version["bulk_upload_page"] = None
+        current_sync_version["version"] = self.change_tracking_current_version
+        self._upsert_current_sync_version(current_sync_version)
+        self.current_sync_versions[
+            f"{table['database_name']}_{table['schema_name']}_{table['table_name']}"
+        ] = current_sync_version
+
+        self._incremental_upload(context, table)
 
     def _full_upload_with_identity_pk_get_start_identity(
         self,
@@ -223,28 +260,64 @@ where pk.is_primary_key = 1
     def _full_upload_with_identity_pk_page_uploaded(
         self, table: Table, identity: int, page: int
     ) -> None:
-        current_sync_version = self.current_sync_versions[
+        current_sync_version: Optional[
+            AirflowSyncChangeTrackingVersion
+        ] = self.current_sync_versions[
             f"{table['database_name']}_{table['schema_name']}_{table['table_name']}"
         ]
-        self._upsert_current_sync_version(
-            table,
-            self.change_tracking_current_version,
-            current_sync_version,
-            current_identity=identity,
-            page=page,
-        )
 
-    def _full_upload_with_identity_pk_done(self, table: Table) -> None:
-        current_sync_version = self.current_sync_versions[
+        if not current_sync_version:
+            current_sync_version = {
+                "database": table["database_name"],
+                "schema": table["schema_name"],
+                "table": table["table_name"],
+                "page_size": None,
+                "change_tracking_table": None,
+                "disabled": None,
+                "version": None,
+                "bulk_upload_page": None,
+                "current_identity_value": None,
+                "current_single_nvarchar_pk": None,
+            }
+
+        current_sync_version["current_identity_value"] = identity
+        current_sync_version["bulk_upload_page"] = page
+        self._upsert_current_sync_version(current_sync_version)
+        self.current_sync_versions[
+            f"{table['database_name']}_{table['schema_name']}_{table['table_name']}"
+        ] = current_sync_version
+
+    def _full_upload_with_identity_pk_done(
+        self, table: Table, context: Context
+    ) -> None:
+        current_sync_version: Optional[
+            AirflowSyncChangeTrackingVersion
+        ] = self.current_sync_versions[
             f"{table['database_name']}_{table['schema_name']}_{table['table_name']}"
         ]
-        self._upsert_current_sync_version(
-            table,
-            self.change_tracking_current_version,
-            current_sync_version,
-            page=None,
-            current_identity=None,
-        )
+        if not current_sync_version:
+            current_sync_version = {
+                "database": table["database_name"],
+                "schema": table["schema_name"],
+                "table": table["table_name"],
+                "page_size": None,
+                "change_tracking_table": None,
+                "disabled": None,
+                "version": None,
+                "bulk_upload_page": None,
+                "current_identity_value": None,
+                "current_single_nvarchar_pk": None,
+            }
+
+        current_sync_version["current_identity_value"] = None
+        current_sync_version["bulk_upload_page"] = None
+        current_sync_version["version"] = self.change_tracking_current_version
+        self._upsert_current_sync_version(current_sync_version)
+        self.current_sync_versions[
+            f"{table['database_name']}_{table['schema_name']}_{table['table_name']}"
+        ] = current_sync_version
+
+        self._incremental_upload(context, table)
 
     def _full_upload_with_single_nvarchar_pk_get_start_pk(
         self,
@@ -268,28 +341,64 @@ where pk.is_primary_key = 1
     def _full_upload_with_single_nvarchar_pk_page_uploaded(
         self, table: Table, pk: str, page: int
     ) -> None:
-        current_sync_version = self.current_sync_versions[
+        current_sync_version: Optional[
+            AirflowSyncChangeTrackingVersion
+        ] = self.current_sync_versions[
             f"{table['database_name']}_{table['schema_name']}_{table['table_name']}"
         ]
-        self._upsert_current_sync_version(
-            table,
-            self.change_tracking_current_version,
-            current_sync_version,
-            page=page,
-            current_single_nvarchar_pk=pk,
-        )
 
-    def _full_upload_with_single_nvarchar_pk_done(self, table: Table) -> None:
-        current_sync_version = self.current_sync_versions[
+        if not current_sync_version:
+            current_sync_version = {
+                "database": table["database_name"],
+                "schema": table["schema_name"],
+                "table": table["table_name"],
+                "page_size": None,
+                "change_tracking_table": None,
+                "disabled": None,
+                "version": None,
+                "bulk_upload_page": None,
+                "current_identity_value": None,
+                "current_single_nvarchar_pk": None,
+            }
+
+        current_sync_version["current_single_nvarchar_pk"] = pk
+        current_sync_version["bulk_upload_page"] = page
+        self._upsert_current_sync_version(current_sync_version)
+        self.current_sync_versions[
+            f"{table['database_name']}_{table['schema_name']}_{table['table_name']}"
+        ] = current_sync_version
+
+    def _full_upload_with_single_nvarchar_pk_done(
+        self, table: Table, context: Context
+    ) -> None:
+        current_sync_version: Optional[
+            AirflowSyncChangeTrackingVersion
+        ] = self.current_sync_versions[
             f"{table['database_name']}_{table['schema_name']}_{table['table_name']}"
         ]
-        self._upsert_current_sync_version(
-            table,
-            self.change_tracking_current_version,
-            current_sync_version,
-            page=None,
-            current_single_nvarchar_pk=None,
-        )
+        if not current_sync_version:
+            current_sync_version = {
+                "database": table["database_name"],
+                "schema": table["schema_name"],
+                "table": table["table_name"],
+                "page_size": None,
+                "change_tracking_table": None,
+                "disabled": None,
+                "version": None,
+                "bulk_upload_page": None,
+                "current_identity_value": None,
+                "current_single_nvarchar_pk": None,
+            }
+
+        current_sync_version["current_single_nvarchar_pk"] = None
+        current_sync_version["bulk_upload_page"] = None
+        current_sync_version["version"] = self.change_tracking_current_version
+        self._upsert_current_sync_version(current_sync_version)
+        self.current_sync_versions[
+            f"{table['database_name']}_{table['schema_name']}_{table['table_name']}"
+        ] = current_sync_version
+
+        self._incremental_upload(context, table)
 
     def _incremental_upload(
         self,
@@ -300,10 +409,25 @@ where pk.is_primary_key = 1
 
         change_tracking_table = None
         change_tracking_pk_columns = None
-        current_sync_version = self.current_sync_versions[
+        current_sync_version: Optional[
+            AirflowSyncChangeTrackingVersion
+        ] = self.current_sync_versions[
             f"{table['database_name']}_{table['schema_name']}_{table['table_name']}"
         ]
-        if current_sync_version and current_sync_version["change_tracking_table"]:
+        if not current_sync_version:
+            current_sync_version = {
+                "database": table["database_name"],
+                "schema": table["schema_name"],
+                "table": table["table_name"],
+                "page_size": None,
+                "change_tracking_table": None,
+                "disabled": None,
+                "version": None,
+                "bulk_upload_page": None,
+                "current_identity_value": None,
+                "current_single_nvarchar_pk": None,
+            }
+        if current_sync_version["change_tracking_table"]:
             change_tracking_table = current_sync_version["change_tracking_table"]
             change_tracking_pk_columns = self._get_change_tracking_table_pks(
                 change_tracking_table
@@ -342,6 +466,7 @@ where pk.is_primary_key = 1
         if len(df) == 0:
             return 0
 
+        df = self._check_dataframe_for_bigquery_safe_column_names(df)
         last_synchronization_version = df["SYS_CHANGE_VERSION"].max()
         df = df.unique(subset=change_tracking_pk_columns, keep="last")
         for pk in (
@@ -374,55 +499,32 @@ where pk.is_primary_key = 1
 
         template = jinja_env.from_string(self.sql_bq_merge)
 
-        insert_columns = ", ".join(
-            map(
-                lambda column: f"`{column}`",
-                self._rename_bigquery_column_names(table["pks"]),
-            )
-        )
-        insert_values = ", ".join(
-            map(
-                lambda column: f"`{column}`",
-                self._rename_bigquery_column_names(table["pks"]),
-            )
-        )
+        safe_pks = self._generate_bigquery_safe_column_names(table["pks"])
+        safe_columns = self._generate_bigquery_safe_column_names(table["columns"])
+
+        insert_columns = ", ".join(map(lambda column: f"`{column}`", safe_pks))
+        insert_values = ", ".join(map(lambda column: f"`{column}`", safe_pks))
 
         if table["columns"]:
             insert_columns = (
                 insert_columns
                 + ", "
-                + ", ".join(
-                    map(
-                        lambda column: f"`{column}`",
-                        self._rename_bigquery_column_names(table["columns"]),
-                    )
-                )
+                + ", ".join(map(lambda column: f"`{column}`", safe_columns))
             )
             insert_values = (
                 insert_values
                 + ", "
-                + ", ".join(
-                    map(
-                        lambda column: f"`{column}`",
-                        self._rename_bigquery_column_names(table["columns"]),
-                    )
-                )
+                + ", ".join(map(lambda column: f"`{column}`", safe_columns))
             )
 
         sql = template.render(
             dataset=self.destination_dataset,
             table=table["table_name"],
             condition_clause=" and ".join(
-                map(
-                    lambda column: f"t.`{column}` = s.`{column}`",
-                    self._rename_bigquery_column_names(table["pks"]),
-                )
+                map(lambda column: f"t.`{column}` = s.`{column}`", safe_pks)
             ),
             update_clause=", ".join(
-                map(
-                    lambda column: f"t.`{column}` = s.`{column}`",
-                    self._rename_bigquery_column_names(table["columns"]),
-                )
+                map(lambda column: f"t.`{column}` = s.`{column}`", safe_columns)
             ),
             insert_columns=insert_columns,
             insert_values=insert_values,
@@ -435,13 +537,11 @@ where pk.is_primary_key = 1
             dataset_table=f"{self.destination_dataset}._incremental_{table['table_name']}",
         )
 
-        self._upsert_current_sync_version(
-            table,
-            self.change_tracking_current_version,
-            current_sync_version=None,
-            page=None,
-            current_identity=None,
-        )
+        current_sync_version["version"] = self.change_tracking_current_version
+        self._upsert_current_sync_version(current_sync_version)
+        self.current_sync_versions[
+            f"{table['database_name']}_{table['schema_name']}_{table['table_name']}"
+        ] = current_sync_version
 
     @backoff.on_exception(
         backoff.expo,
@@ -460,21 +560,9 @@ where pk.is_primary_key = 1
 
     def _upsert_current_sync_version(
         self,
-        table: Table,
-        change_tracking_current_version: int,
-        current_sync_version: Optional[AirflowSyncChangeTrackingVersion],
-        version: Optional[int] = None,
-        page: Optional[int] = None,
-        current_identity: Optional[int] = None,
-        current_single_nvarchar_pk: Optional[str] = None,
+        current_sync_version: AirflowSyncChangeTrackingVersion,
     ):
         jinja_env = self.get_template_env()
-
-        if not version:
-            sync_version = (
-                current_sync_version["version"] if current_sync_version else None
-            )
-            version = sync_version or change_tracking_current_version
 
         hook = self._get_bq_hook()
         template = jinja_env.from_string(self.sql_upsert_current_sync_version)
@@ -485,16 +573,32 @@ where pk.is_primary_key = 1
         client = hook.get_client()
         job_config = bq.QueryJobConfig(
             query_parameters=[
-                bq.ScalarQueryParameter("database", "STRING", table["database_name"]),
-                bq.ScalarQueryParameter("schema", "STRING", table["schema_name"]),
-                bq.ScalarQueryParameter("table", "STRING", table["table_name"]),
-                bq.ScalarQueryParameter("version", "INTEGER", version),
-                bq.ScalarQueryParameter("bulk_upload_page", "INTEGER", page),
                 bq.ScalarQueryParameter(
-                    "current_identity_value", "INTEGER", current_identity
+                    "database", "STRING", current_sync_version["database"]
                 ),
                 bq.ScalarQueryParameter(
-                    "current_single_nvarchar_pk", "STRING", current_single_nvarchar_pk
+                    "schema", "STRING", current_sync_version["schema"]
+                ),
+                bq.ScalarQueryParameter(
+                    "table", "STRING", current_sync_version["table"]
+                ),
+                bq.ScalarQueryParameter(
+                    "version", "INTEGER", current_sync_version["version"]
+                ),
+                bq.ScalarQueryParameter(
+                    "bulk_upload_page",
+                    "INTEGER",
+                    current_sync_version["bulk_upload_page"],
+                ),
+                bq.ScalarQueryParameter(
+                    "current_identity_value",
+                    "INTEGER",
+                    current_sync_version["current_identity_value"],
+                ),
+                bq.ScalarQueryParameter(
+                    "current_single_nvarchar_pk",
+                    "STRING",
+                    current_sync_version["current_single_nvarchar_pk"],
                 ),
             ],
         )
@@ -503,12 +607,6 @@ where pk.is_primary_key = 1
         )
         result = query_job.result()
 
-    @backoff.on_exception(
-        backoff.expo,
-        (Exception),
-        max_time=600,
-        max_tries=20,
-    )
     def _get_current_sync_version(
         self, table: Table
     ) -> Optional[AirflowSyncChangeTrackingVersion]:
@@ -544,17 +642,3 @@ where pk.is_primary_key = 1
         hook = self._get_db_hook()
         df = hook.get_polars_dataframe(query=self.sql_change_tracking_current_version)
         return df["version"][0]
-
-    # def _get_bookkeeper_upsert_hook(self) -> OdbcHook:
-    #     if not self._airflow_upsert_hook:
-    #         self._airflow_upsert_hook = OdbcHook(
-    #             odbc_conn_id=self.odbc_bookkeeper_conn_id
-    #         )
-    #     return self._airflow_upsert_hook
-
-    # def _get_bookkeeper_hook(self) -> ConnectorXHook:
-    #     if not self._airflow_hook:
-    #         self._airflow_hook = ConnectorXHook(
-    #             connectorx_conn_id=self.connectorx_bookkeeper_conn_id
-    #         )
-    #     return self._airflow_hook

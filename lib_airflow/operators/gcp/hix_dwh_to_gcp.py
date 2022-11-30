@@ -138,6 +138,7 @@ where {{ pk_name }} >= {{ pk_value }};
                 else:
                     pk_value = df[pk_name][-1]  # get last value
                 df = df.filter(pl.col("HdwCycleId") <= self.last_cycle_id)
+                df = self._check_dataframe_for_bigquery_safe_column_names(df)
                 self._upload_parquet(
                     df,
                     object_name=f"{self.bucket_dir}/{table['table_name']}/full/{table['table_name']}_{page}.parquet",

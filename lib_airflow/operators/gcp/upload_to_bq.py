@@ -51,23 +51,6 @@ class UploadToBigQueryOperator(BaseOperator):
         self._gcs_hook = None
         self._bq_hook = None
 
-    def _rename_bigquery_column_names(self, columns: List[str]) -> List[str]:
-        """Fields must contain only letters, numbers, and underscores, start with a letter or underscore, and be at most 300 characters long
-
-        Args:
-            columns (List[str]): The list of columns
-
-        Returns:
-            List[str]: The list of columns
-        """
-        for i, column in enumerate(columns):
-            if "-" in column:
-                columns[i] = column.replace("-", "_")
-            if column[0].isdigit():
-                columns[i] = f"_{column}"
-
-        return columns
-
     def _delete_bq_table(self, dataset_table: str) -> None:
         """Delete a BigQuery table
 
