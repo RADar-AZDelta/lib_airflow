@@ -1,6 +1,7 @@
 import traceback
 from typing import Callable, Iterable, List, Sequence, Tuple, Union, cast
 
+import backoff
 from airflow.utils.context import Context
 from airflow.utils.email import send_email
 
@@ -69,7 +70,7 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
         page_size: Union[int, str] = 100000,
         bucket_dir: str = "upload",
         to_email_on_error: list[str] | Iterable[str] | None = None,
-        func_before_execute_table: Callable[[Table, Context], None] | None = None,
+        func_before_execute_table: Callable[[Table, Context], bool] | None = None,
         func_after_execute_table: Callable[[Table, Context], None] | None = None,
         **kwargs,
     ) -> None:
@@ -101,7 +102,11 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
             str_error = None
             try:
                 if self.func_before_execute_table:
-                    self.func_before_execute_table(table, context)
+                    continue_table_execute = self.func_before_execute_table(
+                        table, context
+                    )
+                    if not continue_table_execute:
+                        continue
                 self.execute_table(table, context)
                 if self.func_after_execute_table:
                     self.func_after_execute_table(table, context)
@@ -125,6 +130,12 @@ inner join {{ schema }}.[{{ table }}] t with (nolock) on t.{{ pk_column }} = cte
     def _before_execute(self, context):
         return None
 
+    @backoff.on_exception(
+        backoff.expo,
+        (Exception),
+        max_time=600,
+        max_tries=5,
+    )
     def execute_table(
         self,
         table: Table,

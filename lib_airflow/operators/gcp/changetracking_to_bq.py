@@ -107,6 +107,12 @@ where pk.is_primary_key = 1
             self._get_change_tracking_current_version()
         )
 
+    @backoff.on_exception(
+        backoff.expo,
+        (Exception),
+        max_time=600,
+        max_tries=5,
+    )
     def execute_table(
         self,
         table: Table,
