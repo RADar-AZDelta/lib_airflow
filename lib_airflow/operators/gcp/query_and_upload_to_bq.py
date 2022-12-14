@@ -6,6 +6,7 @@ from typing import Any, List, Sequence
 
 import backoff
 import polars as pl
+import pyarrow as pa
 from lib_airflow.hooks.db.connectorx import ConnectorXHook
 
 from .upload_to_bq import UploadToBigQueryOperator
@@ -38,7 +39,7 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
         sql: str,
         object_name: str,
         table_metadata: Any = None,
-    ) -> int:
+    ) -> pl.DataFrame | pa.Table:
         """Do a query into a Polars DataFrame, store the DataFrame in a temporary Parquet file, upload the Parquet file to
         Cloud Storage, and load it into BigQuery.
 
@@ -72,6 +73,7 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
         Returns:
             pl.DataFrame: The polars DataFrame holding the query results
         """
+        self.log.debug("Running query: %s", sql)
         hook = self._get_db_hook()
         df = hook.get_polars_dataframe(query=sql)
         return df

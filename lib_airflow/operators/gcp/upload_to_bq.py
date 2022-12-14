@@ -18,7 +18,7 @@ BigQueryJob = Union[CopyJob, QueryJob, LoadJob, ExtractJob]
 
 
 class UploadToBigQueryOperator(BaseOperator):
-    """Uploads Polars DataFrames to Gogle Cloud Storage"""
+    """Uploads Polars DataFrames or Arrow Table to Google Cloud Storage"""
 
     template_fields: Sequence[str] = ("bucket",)
 
@@ -132,7 +132,7 @@ class UploadToBigQueryOperator(BaseOperator):
         df: pl.DataFrame | pa.Table,
         object_name: str,
         table_metadata: Any = None,
-    ) -> int:
+    ) -> pl.DataFrame | pa.Table:
         """Upload DataFrame by converting it ot Parquet in a temporary file, and uploading it to Cloud Storage.
 
         Args:
@@ -144,7 +144,7 @@ class UploadToBigQueryOperator(BaseOperator):
             int: Number of uploaded rows
         """
         returned_rows = len(df)
-        self.log.debug(f"Rows fetched: {returned_rows}")
+        self.log.debug(f"Rows fetched: {len(df)}")
 
         if returned_rows > 0:
             if self.func_modify_data:
@@ -152,7 +152,7 @@ class UploadToBigQueryOperator(BaseOperator):
             with self._write_local_data_files(df) as file_to_upload:
                 file_to_upload.flush()
                 self._upload_to_gcs(file_to_upload, object_name)
-        return returned_rows
+        return df
 
     def _write_local_data_files(
         self, df: pl.DataFrame | pa.Table

@@ -63,7 +63,7 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
             f'ES index "{index}" has {resp["hits"]["total"]["value"]} documents'
         )
 
-        table_name = re.sub(r"[^a-zA-Z_\-]", "", index)
+        table = re.sub(r"[^a-zA-Z_\-]", "", index)
 
         tmp_file_handle = NamedTemporaryFile(delete=True)
         json_file = open(tmp_file_handle.name, "w")
@@ -113,7 +113,7 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
                 df = pl.read_json(file=tmp_file_handle.name, json_lines=False)
                 self._upload_parquet(
                     df,
-                    object_name=f"{self.bucket_dir}/{table_name}/full/{table_name}_{page}.parquet",
+                    object_name=f"{self.bucket_dir}/{table}/full/{table}_{page}.parquet",
                 )
                 tmp_file_handle.close()
                 tmp_file_handle = NamedTemporaryFile(delete=True)
@@ -130,17 +130,17 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
             df = pl.read_json(file=tmp_file_handle.name, json_lines=False)
             self._upload_parquet(
                 df,
-                object_name=f"{self.bucket_dir}/{table_name}/full/{table_name}_{page}.parquet",
+                object_name=f"{self.bucket_dir}/{table}/full/{table}_{page}.parquet",
             )
         tmp_file_handle.close()
 
         if self._check_parquet(
-            f"{self.bucket_dir}/{table_name}/full/{table_name}_",
+            f"{self.bucket_dir}/{table}/full/{table}_",
         ):
             self._load_parquets_in_bq(
                 source_uris=[
-                    f"gs://{self.bucket}/{self.bucket_dir}/{table_name}/full/{table_name}_*.parquet"
+                    f"gs://{self.bucket}/{self.bucket_dir}/{table}/full/{table}_*.parquet"
                 ],
-                destination_project_dataset_table=f"{self.destination_dataset}.{table_name}",
+                destination_project_dataset_table=f"{self.destination_dataset}.{table}",
                 # cluster_fields=
             )

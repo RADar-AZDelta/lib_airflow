@@ -9,13 +9,12 @@ from google.api_core.exceptions import NotFound
 from google.cloud.bigquery.job import QueryJob
 from google.cloud.bigquery.retry import DEFAULT_RETRY as BQ_DEFAULT_RETRY
 
-from libs.lib_airflow.lib_airflow.hooks.db.connectorx import ConnectorXHook
-from libs.lib_airflow.lib_airflow.operators.gcp import FullUploadToBigQueryOperator
+from ....hooks.db.connectorx import ConnectorXHook
+from ....model.dbmetadata import Table
+from .full_to_bq import SqlServerFullUploadToBigQueryOperator
 
-from ...model.dbmetadata import Table
 
-
-class HixDwhToBigQueryOperator(FullUploadToBigQueryOperator):
+class HixDwhToBigQueryOperator(SqlServerFullUploadToBigQueryOperator):
     template_fields: Sequence[str] = (
         "bucket",
         "bucket_dir",
@@ -55,7 +54,7 @@ class HixDwhToBigQueryOperator(FullUploadToBigQueryOperator):
         table: Table,
         context: Context,
     ):
-        self.log.info(f"Table: {table['table_name']}")
+        self.log.info(f"Table: {table['table']}")
 
         cycle_id = self._get_last_synced_table_cycle_id(table)
         if not cycle_id:
@@ -78,8 +77,8 @@ class HixDwhToBigQueryOperator(FullUploadToBigQueryOperator):
         return df["last_cycle_id"][0]
 
     def _get_table_cycle_id(self, table: Table) -> int:
-        sql = f"select max(HdwCycleId) as max_cycleid from {self.destination_dataset}.{table['table_name']}"
-        job_id = f"max_cycleid_{table['schema_name']}_{table['table_name']}_{str(uuid.uuid4())}"
+        sql = f"select max(HdwCycleId) as max_cycleid from {self.destination_dataset}.{table['table']}"
+        job_id = f"max_cycleid_{table['schema']}_{table['table']}_{str(uuid.uuid4())}"
 
         try:
             query_job = cast(QueryJob, self._run_bq_job(sql=sql, job_id=job_id))
@@ -96,8 +95,7 @@ class HixDwhToBigQueryOperator(FullUploadToBigQueryOperator):
         if pk_is_shakey:
             table_sequel = (
                 "Link"
-                if table["table_name"].endswith("LinkSat")
-                or table["table_name"].endswith("Link")
+                if table["table"].endswith("LinkSat") or table["table"].endswith("Link")
                 else ""
             )
             pk_name = f"Hdw{table_sequel}Sha1Key"
@@ -105,7 +103,7 @@ class HixDwhToBigQueryOperator(FullUploadToBigQueryOperator):
 
         else:
             # self.log.warn(
-            #     f"Table {table['schema_name']}.{table['table_name']} has no Sha1Key key!"
+            #     f"Table {table['schema']}.{table['table']} has no Sha1Key key!"
             # )
             pk_name = [pk for pk in table["pks"] if pk != "HdwLoadDateUtc"][0]
             pk_value = "''"
@@ -122,8 +120,8 @@ where {{ pk_name }} >= {{ pk_value }};
 """
             )
             sql = template.render(
-                schema=table["schema_name"],
-                table=table["table_name"],
+                schema=table["schema"],
+                table=table["table"],
                 pk_name=pk_name,
                 pk_value=pk_value,
                 page_size=self.page_size,
@@ -141,33 +139,32 @@ where {{ pk_name }} >= {{ pk_value }};
                 df = self._check_dataframe_for_bigquery_safe_column_names(df)
                 self._upload_parquet(
                     df,
-                    object_name=f"{self.bucket_dir}/{table['table_name']}/full/{table['table_name']}_{page}.parquet",
+                    object_name=f"{self.bucket_dir}/{table['table']}/full/{table['table']}_{page}.parquet",
                     table_metadata=table,
                 )
                 page += 1
 
         if self._check_parquet(
-            f"{self.bucket_dir}/{table['table_name']}/full/{table['table_name']}_",
+            f"{self.bucket_dir}/{table['table']}/full/{table['table']}_",
         ):
             self._load_parquets_in_bq(
                 source_uris=[
-                    f"gs://{self.bucket}/{self.bucket_dir}/{table['table_name']}/full/{table['table_name']}_*.parquet"
+                    f"gs://{self.bucket}/{self.bucket_dir}/{table['table']}/full/{table['table']}_*.parquet"
                 ],
-                destination_project_dataset_table=f"{self.destination_dataset}.{table['table_name']}",
+                destination_project_dataset_table=f"{self.destination_dataset}.{table['table']}",
                 # cluster_fields=self._get_cluster_fields(table), # "Clustering is not supported on non-orderable column 'HdwLinkSha1Key' of type 'STRUCT<list ARRAY<STRUCT<item INT64>>>'"
                 write_disposition="WRITE_TRUNCATE",
             )
 
     def _append_cycle(self, table: Table, cycle_id: int):
-        self.log.info(f"Append cycle {cycle_id} to table {table['table_name']}")
+        self.log.info(f"Append cycle {cycle_id} to table {table['table']}")
         jinja_env = self.get_template_env()
 
         pk_is_shakey = any(pk for pk in table["pks"] if pk.endswith("Sha1Key"))
         if pk_is_shakey:
             table_sequel = (
                 "Link"
-                if table["table_name"].endswith("LinkSat")
-                or table["table_name"].endswith("Link")
+                if table["table"].endswith("LinkSat") or table["table"].endswith("Link")
                 else ""
             )
             pk_name = f"Hdw{table_sequel}Sha1Key"
@@ -195,8 +192,8 @@ inner join {{ schema }}.{{ table }} t on t.{{ pk_name }} = cte.{{ pk_name }} and
 """
             )
             sql = template.render(
-                schema=table["schema_name"],
-                table=table["table_name"],
+                schema=table["schema"],
+                table=table["table"],
                 pk_name=pk_name,
                 cycle_id=cycle_id,
                 page_size=self.page_size,
@@ -204,7 +201,7 @@ inner join {{ schema }}.{{ table }} t on t.{{ pk_name }} = cte.{{ pk_name }} and
             )
             returned_rows = self._query_to_parquet_and_upload(
                 sql=sql,
-                object_name=f"{self.bucket_dir}/{table['table_name']}/cycle_{cycle_id}/{table['table_name']}_{cycle_id}_{page}.parquet",
+                object_name=f"{self.bucket_dir}/{table['table']}/cycle_{cycle_id}/{table['table']}_{cycle_id}_{page}.parquet",
                 table_metadata=table,
             )
             page += 1
@@ -213,13 +210,13 @@ inner join {{ schema }}.{{ table }} t on t.{{ pk_name }} = cte.{{ pk_name }} and
             return
 
         if self._check_parquet(
-            f"{self.bucket_dir}/{table['table_name']}/cycle_{cycle_id}/{table['table_name']}_",
+            f"{self.bucket_dir}/{table['table']}/cycle_{cycle_id}/{table['table']}_",
         ):
             self._load_parquets_in_bq(
                 source_uris=[
-                    f"gs://{self.bucket}/{self.bucket_dir}/{table['table_name']}/cycle_{cycle_id}/{table['table_name']}_*.parquet"
+                    f"gs://{self.bucket}/{self.bucket_dir}/{table['table']}/cycle_{cycle_id}/{table['table']}_*.parquet"
                 ],
-                destination_project_dataset_table=f"{self.destination_dataset}.{table['table_name']}",
+                destination_project_dataset_table=f"{self.destination_dataset}.{table['table']}",
                 # cluster_fields=self._get_cluster_fields(table), # "Clustering is not supported on non-orderable column 'HdwLinkSha1Key' of type 'STRUCT<list ARRAY<STRUCT<item INT64>>>'"
                 write_disposition="WRITE_APPEND",
                 schema_update_options=["ALLOW_FIELD_ADDITION"],
@@ -253,8 +250,8 @@ inner join {{ schema }}.{{ table }} t on t.{{ pk_name }} = cte.{{ pk_name }} and
         query = template.render(
             {
                 "params": {
-                    "schema_name": table["schema_name"],
-                    "table_name": table["table_name"],
+                    "schema": table["schema"],
+                    "table": table["table"],
                 }
             }
         )
@@ -274,8 +271,8 @@ inner join {{ schema }}.{{ table }} t on t.{{ pk_name }} = cte.{{ pk_name }} and
         hook.run(
             sql,
             parameters=[
-                table["schema_name"],
-                table["table_name"],
+                table["schema"],
+                table["table"],
                 cycleid,
             ],
         )
