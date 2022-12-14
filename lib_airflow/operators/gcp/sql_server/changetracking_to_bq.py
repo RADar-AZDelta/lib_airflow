@@ -83,7 +83,6 @@ SELECT DB_NAME(DB_ID()) as [database]
 	,type_name(col.system_type_id) AS system_type
 	,type_name(col.user_type_id) AS user_type
 	,IIF(ic.index_column_id is null, cast(0 as bit), cast(1 as bit)) as is_pk
-	,col.is_identity
 	,ic.index_column_id
 FROM sys.change_tracking_tables tr
 INNER JOIN sys.tables t on t.object_id = tr.object_id

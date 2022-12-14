@@ -16,7 +16,7 @@ class AirflowJsonDecoder(json.JSONDecoder):
     """
 
     def __init__(self, *args, **kwargs):
-        if kwargs["object_hook"]:
+        if "object_hook" in kwargs:
             super().__init__(*args, **kwargs)
         else:
             super().__init__(object_hook=self.object_hook, *args, **kwargs)

@@ -4,13 +4,12 @@
 from typing import Any, List, Optional, Tuple, Union
 from urllib.parse import unquote
 
+import connectorx as cx
 import pandas as pd
 import polars as pl
 import pyarrow as pa
 from airflow.exceptions import AirflowException
 from airflow.hooks.base import BaseHook
-
-import connectorx as cx
 
 
 class ConnectorXHook(BaseHook):
@@ -84,6 +83,36 @@ class ConnectorXHook(BaseHook):
             partition_range=partition_range,
             partition_num=partition_num,
         )
+
+    def get_arrow2_table(
+        self,
+        query: Optional[Union[List[str], str]] = None,
+        protocol: str = "binary",
+        partition_on: Optional[str] = None,
+        partition_range: Optional[Tuple[int, int]] = None,
+        partition_num: Optional[int] = None,
+    ) -> pa.Table:
+        """Executes the query and returns the results as an Arrow table.
+
+        Args:
+            query (Optional[Union[List[str], str]], optional): The SQL query. Defaults to None.
+            protocol (str, optional): Backend-specific transfer protocol directive. Defaults to "binary".
+            partition_on (Optional[str], optional): The column on which to partition the result.. Defaults to None.
+            partition_range (Optional[Tuple[int, int]], optional): The value range of the partition column. Defaults to None.
+            partition_num (Optional[int], optional): How many partitions to generate.. Defaults to None.
+
+        Returns:
+            pa.Table: Arrow table
+        """
+        table: pa.Table = self.run(
+            query=query,  # type: ignore
+            return_type="arrow2",
+            protocol=protocol,
+            partition_on=partition_on,
+            partition_range=partition_range,
+            partition_num=partition_num,
+        )
+        return table
 
     def get_arrow_table(
         self,

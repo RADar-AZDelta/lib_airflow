@@ -9,4 +9,3 @@ class Table(TypedDict):
     pks_type: list[str]
     columns: list[str]
     columns_type: list[str]
-    is_identity: bool

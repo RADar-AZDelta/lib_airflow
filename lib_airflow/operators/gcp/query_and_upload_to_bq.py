@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: gpl3+
 
 import re
-from typing import Any, List, Sequence
+from typing import Any, List, Sequence, cast
 
 import backoff
 import polars as pl
 import pyarrow as pa
+from airflow.hooks.base import BaseHook
 from lib_airflow.hooks.db.connectorx import ConnectorXHook
 
 from .upload_to_bq import UploadToBigQueryOperator
@@ -20,16 +21,16 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
 
     def __init__(
         self,
-        connectorx_source_db_conn_id: str,
+        source_db_conn_id: str,
         **kwargs,
     ) -> None:
         """Constructor
 
         Args:
-            connectorx_source_db_conn_id (str): The ConnectorX connection id
+            source_db_conn_id (str): The ConnectorX connection id
         """
         super().__init__(**kwargs)
-        self.connectorx_source_db_conn_id = connectorx_source_db_conn_id
+        self.source_db_conn_id = source_db_conn_id
 
         self._db_hook = None
         self._re_pattern_bigquery_safe_column_names = re.compile(r"[^_0-9a-zA-Z]+")
@@ -75,19 +76,18 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
         """
         self.log.debug("Running query: %s", sql)
         hook = self._get_db_hook()
+        hook = cast(ConnectorXHook, hook)
         df = hook.get_polars_dataframe(query=sql)
         return df
 
-    def _get_db_hook(self) -> ConnectorXHook:
+    def _get_db_hook(self) -> BaseHook:
         """Get the ConnectorX hook
 
         Returns:
             ConnectorXHook: The ConnectorX hook
         """
         if not self._db_hook:
-            self._db_hook = ConnectorXHook(
-                connectorx_conn_id=self.connectorx_source_db_conn_id
-            )
+            self._db_hook = ConnectorXHook(connectorx_conn_id=self.source_db_conn_id)
         return self._db_hook
 
     def _check_dataframe_for_bigquery_safe_column_names(self, df: pl.DataFrame):
