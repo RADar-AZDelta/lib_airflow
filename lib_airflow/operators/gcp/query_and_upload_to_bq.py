@@ -7,9 +7,8 @@ from typing import Any, List, Sequence, cast
 import backoff
 import polars as pl
 import pyarrow as pa
-from airflow.hooks.base import BaseHook
-from lib_airflow.hooks.db.connectorx import ConnectorXHook
 
+from ...hooks.db import BigQueryHook, ConnectorXHook
 from .upload_to_bq import UploadToBigQueryOperator
 
 
@@ -22,6 +21,7 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
     def __init__(
         self,
         source_db_conn_id: str,
+        db_hook_type: str = "ConnectorX",
         **kwargs,
     ) -> None:
         """Constructor
@@ -31,6 +31,7 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
         """
         super().__init__(**kwargs)
         self.source_db_conn_id = source_db_conn_id
+        self._db_hook_type = db_hook_type
 
         self._db_hook = None
         self._re_pattern_bigquery_safe_column_names = re.compile(r"[^_0-9a-zA-Z]+")
@@ -76,18 +77,27 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
         """
         self.log.debug("Running query: %s", sql)
         hook = self._get_db_hook()
-        hook = cast(ConnectorXHook, hook)
         df = cast(pl.DataFrame, hook.run(sql))
         return df
 
-    def _get_db_hook(self) -> BaseHook:
+    def _get_db_hook(self) -> ConnectorXHook | BigQueryHook:
         """Get the ConnectorX hook
 
         Returns:
             ConnectorXHook: The ConnectorX hook
         """
         if not self._db_hook:
-            self._db_hook = ConnectorXHook(connectorx_conn_id=self.source_db_conn_id)
+            if self._db_hook_type == "ConnectorX":
+                self._db_hook = ConnectorXHook(
+                    connectorx_conn_id=self.source_db_conn_id
+                )
+            elif self._db_hook_type == "BigQuery":
+                self._db_hook = BigQueryHook(
+                    conn_id=self.source_db_conn_id,
+                    location=self.gcp_location,
+                )
+            else:
+                raise Exception(f"Unknown db hook type '{self._db_hook_type}'")
         return self._db_hook
 
     def _check_dataframe_for_bigquery_safe_column_names(self, df: pl.DataFrame):

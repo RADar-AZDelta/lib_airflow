@@ -8,8 +8,7 @@ import polars as pl
 from airflow.hooks.base import BaseHook
 from airflow.utils.context import Context
 
-from libs.lib_airflow.lib_airflow.hooks.db.bq import BigQueryHook
-
+from ...hooks.db.bq import BigQueryHook
 from ...model.bookkeeper import BookkeeperFullUploadTable, BookkeeperTable
 from ...model.dbmetadata import Table
 from .full_to_bq_base import FullUploadToBigQueryBaseOperator
@@ -175,29 +174,3 @@ order by table_catalog, table_schema, table_name, clustering_ordinal_position, o
             )
 
         self._full_upload_done(table, bookkeeper_table, context)
-
-    @backoff.on_exception(
-        backoff.expo,
-        (Exception),
-        max_time=600,
-        max_tries=20,
-    )
-    def _query(
-        self,
-        sql: str,
-    ) -> pl.DataFrame:  # ConnectorX gives error so we use the build in slower BigQueryHook
-        self.log.debug("Running query: %s", sql)
-        hook = self._get_db_hook()
-        hook = cast(BigQueryHook, hook)
-        df = hook.run(sql)
-        return df
-
-    def _get_db_hook(
-        self,
-    ) -> BaseHook:  # ConnectorX gives error so we use the build in slower BigQueryHook
-        if not self._db_hook:
-            self._db_hook = BigQueryHook(
-                conn_id=self.source_db_conn_id,
-                location=self.gcp_location,
-            )
-        return self._db_hook
