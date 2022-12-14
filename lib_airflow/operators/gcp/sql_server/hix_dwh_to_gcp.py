@@ -9,7 +9,7 @@ from google.api_core.exceptions import NotFound
 from google.cloud.bigquery.job import QueryJob
 from google.cloud.bigquery.retry import DEFAULT_RETRY as BQ_DEFAULT_RETRY
 
-from ....hooks.db.connectorx import ConnectorXHook
+from ....hooks.db import ConnectorXHook
 from ....model.dbmetadata import Table
 from .full_to_bq import SqlServerFullUploadToBigQueryOperator
 
@@ -247,7 +247,7 @@ inner join {{ schema }}.{{ table }} t on t.{{ pk_name }} = cte.{{ pk_name }} and
 
         hook = ConnectorXHook(connectorx_conn_id=self.connectorx_bookkeeper_conn_id)
         template = jinja_env.from_string(self.sql_last_synced_table_cycle_id)
-        query = template.render(
+        sql = template.render(
             {
                 "params": {
                     "schema": table["schema"],
@@ -255,7 +255,7 @@ inner join {{ schema }}.{{ table }} t on t.{{ pk_name }} = cte.{{ pk_name }} and
                 }
             }
         )
-        df = hook.get_polars_dataframe(query=query)
+        df = cast(pl.DataFrame, hook.run(sql))
         return cast(int, df["cycleid"][0]) if len(df) else None
 
     def _upsert_current_cycleid(

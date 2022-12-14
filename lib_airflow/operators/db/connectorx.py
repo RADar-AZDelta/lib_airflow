@@ -1,12 +1,13 @@
 # Copyright 2022 RADar-AZDelta
 # SPDX-License-Identifier: gpl3+"""ConnectorX to GCS operator."""
 
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, Sequence, cast
 
 import polars as pl
 from airflow.models.baseoperator import BaseOperator
 from airflow.utils.context import Context
-from lib_airflow.hooks.db.connectorx import ConnectorXHook
+
+from ...hooks.db.connectorx import ConnectorXHook
 
 
 class ConnectorXOperator(BaseOperator):
@@ -64,7 +65,7 @@ class ConnectorXOperator(BaseOperator):
         self.log.info("Executing SQL: %s", self.sql)
         hook = self.get_hook()
 
-        df = hook.get_polars_dataframe(query=self.sql)
+        df = cast(pl.DataFrame, hook.run(self.sql))
 
         if self.func_modify_data:
             df = self.func_modify_data(df, context)

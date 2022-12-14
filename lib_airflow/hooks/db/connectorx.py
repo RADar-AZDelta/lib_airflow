@@ -1,7 +1,7 @@
 # Copyright 2022 RADar-AZDelta
 # SPDX-License-Identifier: gpl3+"""ConnectorX to GCS operator."""
 
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union, cast
 from urllib.parse import unquote
 
 import connectorx as cx
@@ -51,11 +51,11 @@ class ConnectorXHook(BaseHook):
         self,
         query: Optional[Union[List[str], str]] = None,
         protocol: str = "binary",
-        return_type: str = "arrow2",
+        return_type: str = "polars",
         partition_on: Optional[str] = None,
         partition_range: Optional[Tuple[int, int]] = None,
         partition_num: Optional[int] = None,
-    ) -> Any:
+    ) -> pa.Table | pl.DataFrame | pd.DataFrame:
         """Run the hook. Execute the query with ConnectorX.
 
         Args:
@@ -84,132 +84,12 @@ class ConnectorXHook(BaseHook):
             partition_num=partition_num,
         )
 
-    def get_arrow2_table(
-        self,
-        query: Optional[Union[List[str], str]] = None,
-        protocol: str = "binary",
-        partition_on: Optional[str] = None,
-        partition_range: Optional[Tuple[int, int]] = None,
-        partition_num: Optional[int] = None,
-    ) -> pa.Table:
-        """Executes the query and returns the results as an Arrow table.
-
-        Args:
-            query (Optional[Union[List[str], str]], optional): The SQL query. Defaults to None.
-            protocol (str, optional): Backend-specific transfer protocol directive. Defaults to "binary".
-            partition_on (Optional[str], optional): The column on which to partition the result.. Defaults to None.
-            partition_range (Optional[Tuple[int, int]], optional): The value range of the partition column. Defaults to None.
-            partition_num (Optional[int], optional): How many partitions to generate.. Defaults to None.
-
-        Returns:
-            pa.Table: Arrow table
-        """
-        table: pa.Table = self.run(
-            query=query,  # type: ignore
-            return_type="arrow2",
-            protocol=protocol,
-            partition_on=partition_on,
-            partition_range=partition_range,
-            partition_num=partition_num,
-        )
-        return table
-
-    def get_arrow_table(
-        self,
-        query: Optional[Union[List[str], str]] = None,
-        protocol: str = "binary",
-        partition_on: Optional[str] = None,
-        partition_range: Optional[Tuple[int, int]] = None,
-        partition_num: Optional[int] = None,
-    ) -> pa.Table:
-        """Executes the query and returns the results as an Arrow table.
-
-        Args:
-            query (Optional[Union[List[str], str]], optional): The SQL query. Defaults to None.
-            protocol (str, optional): Backend-specific transfer protocol directive. Defaults to "binary".
-            partition_on (Optional[str], optional): The column on which to partition the result.. Defaults to None.
-            partition_range (Optional[Tuple[int, int]], optional): The value range of the partition column. Defaults to None.
-            partition_num (Optional[int], optional): How many partitions to generate.. Defaults to None.
-
-        Returns:
-            pa.Table: Arrow table
-        """
-        table: pa.Table = self.run(
-            query=query,  # type: ignore
-            return_type="arrow",
-            protocol=protocol,
-            partition_on=partition_on,
-            partition_range=partition_range,
-            partition_num=partition_num,
-        )
-        return table
-
-    def get_polars_dataframe(
-        self,
-        query: Optional[Union[List[str], str]] = None,
-        protocol: str = "binary",
-        partition_on: Optional[str] = None,
-        partition_range: Optional[Tuple[int, int]] = None,
-        partition_num: Optional[int] = None,
-    ) -> pl.DataFrame:
-        """Executes the query and returns the results as a Polars dataframe
-
-        Args:
-            query (Optional[Union[List[str], str]], optional): The SQL query. Defaults to None.
-            protocol (str, optional): Backend-specific transfer protocol directive. Defaults to "binary".
-            partition_on (Optional[str], optional): The column on which to partition the result.. Defaults to None.
-            partition_range (Optional[Tuple[int, int]], optional): The value range of the partition column. Defaults to None.
-            partition_num (Optional[int], optional): How many partitions to generate.. Defaults to None.
-
-        Returns:
-            pl.DataFrame: Polars dataframe
-        """
-        df: pl.DataFrame = self.run(
-            query=query,  # type: ignore
-            return_type="polars",
-            protocol=protocol,
-            partition_on=partition_on,
-            partition_range=partition_range,
-            partition_num=partition_num,
-        )
-        return df
-
-    def get_pandas_dataframe(
-        self,
-        query: Optional[Union[List[str], str]] = None,
-        protocol: str = "binary",
-        partition_on: Optional[str] = None,
-        partition_range: Optional[Tuple[int, int]] = None,
-        partition_num: Optional[int] = None,
-    ) -> pd.DataFrame:
-        """Executes the query and returns the results as a Pandas dataframe
-
-        Args:
-            query (Optional[Union[List[str], str]], optional): The SQL query. Defaults to None.
-            protocol (str, optional): Backend-specific transfer protocol directive. Defaults to "binary".
-            partition_on (Optional[str], optional): The column on which to partition the result.. Defaults to None.
-            partition_range (Optional[Tuple[int, int]], optional): The value range of the partition column. Defaults to None.
-            partition_num (Optional[int], optional): How many partitions to generate.. Defaults to None.
-
-        Returns:
-            pd.DataFrame: Pandas dataframe
-        """
-        df: pd.DataFrame = self.run(
-            query=query,  # type: ignore
-            return_type="pandas",
-            protocol=protocol,
-            partition_on=partition_on,
-            partition_range=partition_range,
-            partition_num=partition_num,
-        )
-        return df
-
     def test_connection(self):
         """Tests the connection by executing a select 1 query"""
         status, message = False, ""
         try:
-            table = self.get_arrow_table("select 1")
-            if table.num_rows == 1:
+            df: pl.DataFrame = cast(pl.DataFrame, self.run("select 1"))
+            if len(df) == 1:
                 status = True
                 message = "Connection successfully tested"
         except Exception as e:

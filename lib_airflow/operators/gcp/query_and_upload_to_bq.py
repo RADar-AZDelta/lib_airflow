@@ -77,7 +77,7 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
         self.log.debug("Running query: %s", sql)
         hook = self._get_db_hook()
         hook = cast(ConnectorXHook, hook)
-        df = hook.get_polars_dataframe(query=sql)
+        df = cast(pl.DataFrame, hook.run(sql))
         return df
 
     def _get_db_hook(self) -> BaseHook:

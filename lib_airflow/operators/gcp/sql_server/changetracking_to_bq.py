@@ -7,6 +7,7 @@ import google.cloud.bigquery as bq
 import polars as pl
 from airflow.utils.context import Context
 
+from ....hooks.db.connectorx import ConnectorXHook
 from ....model.bookkeeper import (
     BookkeeperChangeTrackingTable,
     BookkeeperFullUploadTable,
@@ -378,6 +379,6 @@ where pk.is_primary_key = 1
         max_tries=20,
     )
     def _get_change_tracking_current_version(self) -> int:
-        hook = self._get_db_hook()
-        df = hook.get_polars_dataframe(query=self.sql_get_change_tracking_version)
+        hook = cast(ConnectorXHook, self._get_db_hook())
+        df = cast(pl.DataFrame, hook.run(self.sql_get_change_tracking_version))
         return df["version"][0]
