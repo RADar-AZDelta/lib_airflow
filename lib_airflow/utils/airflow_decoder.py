@@ -29,10 +29,9 @@ class AirflowJsonDecoder(json.JSONDecoder):
         This feature can be used to implement custom decoders.
         """
         for k, v in dct.items():
-            if isinstance(v, str) and match_iso8601(v) is not None:
+            if isinstance(v, str) and match_iso8601(v):
                 try:
-                    # dct[k] = datetime.fromisoformat(v)
-                    dct[k] = datetime.strptime(v, "%Y-%m-%dT%H:%M:%SZ")
-                except:
+                    dct[k] = datetime.fromisoformat(v)
+                except ValueError:
                     pass
         return dct
