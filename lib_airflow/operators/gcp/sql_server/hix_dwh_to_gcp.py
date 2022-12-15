@@ -1,15 +1,14 @@
-import uuid
-from typing import Optional, Sequence, cast
+from typing import Sequence, cast
 
-import backoff
+import google.cloud.bigquery as bq
 import polars as pl
-from airflow.providers.odbc.hooks.odbc import OdbcHook
 from airflow.utils.context import Context
-from google.api_core.exceptions import NotFound
-from google.cloud.bigquery.job import QueryJob
-from google.cloud.bigquery.retry import DEFAULT_RETRY as BQ_DEFAULT_RETRY
 
-from ....hooks.db import ConnectorXHook
+from ....model.bookkeeper import (
+    BookkeeperFullUploadTable,
+    BookkeeperHixDxhTable,
+    BookkeeperTable,
+)
 from ....model.dbmetadata import Table
 from .full_to_bq import SqlServerFullUploadToBigQueryOperator
 
@@ -19,76 +18,178 @@ class HixDwhToBigQueryOperator(SqlServerFullUploadToBigQueryOperator):
         "bucket",
         "bucket_dir",
         "page_size",
-        "sql_full_upload",
-        "sql_full_upload_with_identity_pk",
-        "sql_full_upload_with_single_nvarchar_pk",
-        "sql_last_synced_table_cycle_id",
-        "sql_upsert_last_synced_table_cycle_id",
+        "sql_get_bookkeeper_table",
+        "sql_upsert_bookkeeper_table",
+        "sql_paged_full_upload",
+        "sql_paged_full_upload_with_cte",
+        "sql_topped_full_upload",
+        "sql_get_tables_metadata",
     )
 
     def __init__(
         self,
-        connectorx_bookkeeper_conn_id: str,
-        odbc_bookkeeper_conn_id: str,
-        sql_last_synced_table_cycle_id: str,
-        sql_upsert_last_synced_table_cycle_id: str,
+        sql_get_bookkeeper_table: str = """{% raw %}
+select database, schema, table, disabled, page_size, current_pk, current_page, cycleid
+from {{ bookkeeper_dataset }}.{{ bookkeeper_table }}
+where database = '{{ database }}' and schema = '{{ schema }}' and table = '{{ table }}'
+{% endraw %}""",
+        sql_upsert_bookkeeper_table: str = """{% raw %}
+MERGE {{ bookkeeper_dataset }}.{{ bookkeeper_table }} AS target
+USING (SELECT @database as database, @schema as schema, @table as table, @current_pk as current_pk, @current_page as current_page, @cycleid as cycleid) AS source
+ON (target.database = source.database and target.schema = source.schema and target.table = source.table)
+    WHEN MATCHED THEN
+        UPDATE SET current_pk = source.current_pk,
+            current_page = source.current_page,
+            cycleid = source.cycleid
+    WHEN NOT MATCHED THEN
+        INSERT (database, schema, table, current_pk, current_page, cycleid)
+        VALUES (source.database, source.schema, source.table, source.current_pk, source.current_page, source.cycleid);
+{% endraw %}""",
+        sql_last_cycleid="select max(cycleid) as last_cycle_id from hdw.CycleLog with (nolock) where EndDateUtc <= GETDATE()",
+        sql_get_tables_metadata: str = """{% raw %}
+SELECT DB_NAME(DB_ID()) as [database]
+    ,s.name as [schema]
+	,t.name AS [table]
+	,col.name as col_name
+	,type_name(col.system_type_id) AS system_type
+	,type_name(col.user_type_id) AS user_type
+	,IIF(ic.index_column_id is null, cast(0 as bit), cast(1 as bit)) as is_pk
+	,ic.index_column_id
+FROM sys.tables t
+INNER JOIN sys.schemas s on s.schema_id = t.schema_id
+inner join sys.columns col on col.object_id = t.object_id
+left outer join sys.indexes pk on t.object_id = pk.object_id and pk.is_primary_key = 1 
+left outer join sys.index_columns ic on ic.object_id = pk.object_id and ic.index_id = pk.index_id and col.column_id = ic.column_id
+{%- if where_clause %}
+{{ where_clause }}
+    and s.name = 'hdw'
+{% else %}
+where s.name = 'hdw'
+{% endif %}
+order by [schema], [table], is_pk desc, ic.index_column_id asc
+{% endraw %}""",
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
-        self.connectorx_bookkeeper_conn_id = connectorx_bookkeeper_conn_id
-        self.odbc_bookkeeper_conn_id = odbc_bookkeeper_conn_id
-        self.sql_last_synced_table_cycle_id = sql_last_synced_table_cycle_id
-        self.sql_upsert_last_synced_table_cycle_id = (
-            sql_upsert_last_synced_table_cycle_id
-        )
+
+        self.sql_get_bookkeeper_table = sql_get_bookkeeper_table
+        self.sql_upsert_bookkeeper_table = sql_upsert_bookkeeper_table
+        self.sql_last_cycleid = sql_last_cycleid
+        self.sql_get_tables_metadata = sql_get_tables_metadata
 
         self.last_cycle_id = 0
-        self._airflow_hook = None
-        self._airflow_upsert_hook = None
 
     def _before_execute(self, context):
         self.last_cycle_id = self._get_last_cycle_id()
 
+    def _empty_bookkeeper_table_record(self, table: Table) -> BookkeeperTable:
+        return cast(
+            BookkeeperHixDxhTable,
+            {
+                "database": table["database"],
+                "schema": table["schema"],
+                "table": table["table"],
+                "disabled": None,
+                "page_size": None,
+                "bulk_upload_page": None,
+                "current_pk": None,
+                "current_page": None,
+                "cycleid": None,
+            },
+        )
+
+    def _upsert_bookkeeper_table(
+        self,
+        bookkeeper_table: BookkeeperTable,
+    ):
+        bookkeeper_table = cast(BookkeeperHixDxhTable, bookkeeper_table)
+        jinja_env = self.get_template_env()
+        template = jinja_env.from_string(self.sql_upsert_bookkeeper_table)
+        query = template.render(
+            bookkeeper_dataset=self.bookkeeper_dataset,
+            bookkeeper_table=self.bookkeeper_table,
+        )
+        hook = self._get_bq_hook()
+        client = hook.get_client()
+        job_config = bq.QueryJobConfig(
+            query_parameters=[
+                bq.ScalarQueryParameter(
+                    "database", "STRING", bookkeeper_table["database"]
+                ),
+                bq.ScalarQueryParameter("schema", "STRING", bookkeeper_table["schema"]),
+                bq.ScalarQueryParameter("table", "STRING", bookkeeper_table["table"]),
+                bq.ScalarQueryParameter(
+                    "current_page",
+                    "INTEGER",
+                    bookkeeper_table["current_page"],
+                ),
+                bq.ScalarQueryParameter(
+                    "current_pk",
+                    "STRING",
+                    bookkeeper_table["current_pk"],
+                ),
+                bq.ScalarQueryParameter(
+                    "cycleid",
+                    "INTEGER",
+                    bookkeeper_table["cycleid"],
+                ),
+            ],
+        )
+        query_job = client.query(
+            query, job_config=job_config, location=self.gcp_location
+        )
+        query_job.result()
+
     def execute_table(
         self,
         table: Table,
+        bookkeeper_table: BookkeeperTable,
         context: Context,
     ):
-        self.log.info(f"Table: {table['table']}")
+        self.log.info("Table: %s", table["table"])
 
-        cycle_id = self._get_last_synced_table_cycle_id(table)
-        if not cycle_id:
-            cycle_id = self._get_table_cycle_id(table)
+        upload_strategy = self._choose_upload_strategy(table, bookkeeper_table)
 
-        if cycle_id == 0:
-            self._full_upload(table)
+        bookkeeper_table = cast(BookkeeperHixDxhTable, bookkeeper_table)
+
+        if upload_strategy == "cycle_upload":
+            if not bookkeeper_table["cycleid"]:
+                bookkeeper_table["cycleid"] = 0
+            while bookkeeper_table["cycleid"] <= self.last_cycle_id:
+                self._upload_cycle(context, table, bookkeeper_table)
         else:
-            cycle_id += 1
+            super().execute_table(table, bookkeeper_table, context)
+            # self._cleanup_previous_upload(table)
+            # self._full_upload(context, table, bookkeeper_table)
+            bookkeeper_table["cycleid"] = self.last_cycle_id
+            self._cycle_upload_done(table, bookkeeper_table, context)
 
-            while cycle_id <= self.last_cycle_id:
-                self._append_cycle(table, cycle_id)
-                self._upsert_current_cycleid(table, cycle_id)
-                cycle_id += 1
+    def _choose_upload_strategy(self, table: Table, bookkeeper_table: BookkeeperTable):
+        bookkeeper_table = cast(BookkeeperHixDxhTable, bookkeeper_table)
+        if bookkeeper_table["cycleid"]:
+            upload_strategy = "cycle_upload"
+        else:
+            upload_strategy = super()._choose_upload_strategy(table, bookkeeper_table)
+
+        self.log.info("Upload strategy: %s", upload_strategy)
+        return upload_strategy
 
     def _get_last_cycle_id(self) -> int:
-        df = self._query(
-            "select max(cycleid) as last_cycle_id from hdw.CycleLog with (nolock) where EndDateUtc <= GETDATE()"
-        )
+        df = self._query(self.sql_last_cycleid)
         return df["last_cycle_id"][0]
 
-    def _get_table_cycle_id(self, table: Table) -> int:
-        sql = f"select max(HdwCycleId) as max_cycleid from {self.destination_dataset}.{table['table']}"
-        job_id = f"max_cycleid_{table['schema']}_{table['table']}_{str(uuid.uuid4())}"
+    def _upload_cycle(
+        self, context: Context, table: Table, bookkeeper_table: BookkeeperHixDxhTable
+    ):
+        if (bookkeeper_table["cycleid"] or 0) > self.last_cycle_id:
+            self.log.info(
+                f"Cycle {self.last_cycle_id} already uploaded for table {table['table']}"
+            )
+            return
 
-        try:
-            query_job = cast(QueryJob, self._run_bq_job(sql=sql, job_id=job_id))
-            df = pl.from_arrow(query_job.to_arrow())
-            max_cycleid = cast(int, df["max_cycleid"][0])
-            return max_cycleid
-        except NotFound as e:
-            return 0
-
-    def _full_upload(self, table: Table):
+        self.log.info(
+            f"Append cycle {bookkeeper_table['cycleid']} to table {table['table']}"
+        )
         jinja_env = self.get_template_env()
 
         pk_is_shakey = any(pk for pk in table["pks"] if pk.endswith("Sha1Key"))
@@ -99,81 +200,12 @@ class HixDwhToBigQueryOperator(SqlServerFullUploadToBigQueryOperator):
                 else ""
             )
             pk_name = f"Hdw{table_sequel}Sha1Key"
-            pk_value = "0x0"
-
-        else:
-            # self.log.warn(
-            #     f"Table {table['schema']}.{table['table']} has no Sha1Key key!"
-            # )
-            pk_name = [pk for pk in table["pks"] if pk != "HdwLoadDateUtc"][0]
-            pk_value = "''"
-
-        page = 0
-        page_size = self.get_page_size(table)
-        returned_rows = page_size
-        while returned_rows == page_size:
-            template = jinja_env.from_string(
-                """
-select top {{ page_size }} *
-from {{ schema }}.{{ table }}
-where {{ pk_name }} >= {{ pk_value }};
-"""
-            )
-            sql = template.render(
-                schema=table["schema"],
-                table=table["table"],
-                pk_name=pk_name,
-                pk_value=pk_value,
-                page_size=self.page_size,
-            )
-            df = self._query(sql)
-            returned_rows = len(df)
-            if returned_rows:
-                if pk_is_shakey:
-                    pk_value = "0x" + "".join(
-                        "{:02x}".format(x) for x in df[pk_name][-1]  # get last sha1key
-                    )
-                else:
-                    pk_value = df[pk_name][-1]  # get last value
-                df = df.filter(pl.col("HdwCycleId") <= self.last_cycle_id)
-                df = self._check_dataframe_for_bigquery_safe_column_names(df)
-                self._upload_parquet(
-                    df,
-                    object_name=f"{self.bucket_dir}/{table['table']}/full/{table['table']}_{page}.parquet",
-                    table_metadata=table,
-                )
-                page += 1
-
-        if self._check_parquet(
-            f"{self.bucket_dir}/{table['table']}/full/{table['table']}_",
-        ):
-            self._load_parquets_in_bq(
-                source_uris=[
-                    f"gs://{self.bucket}/{self.bucket_dir}/{table['table']}/full/{table['table']}_*.parquet"
-                ],
-                destination_project_dataset_table=f"{self.destination_dataset}.{table['table']}",
-                # cluster_fields=self._get_cluster_fields(table), # "Clustering is not supported on non-orderable column 'HdwLinkSha1Key' of type 'STRUCT<list ARRAY<STRUCT<item INT64>>>'"
-                write_disposition="WRITE_TRUNCATE",
-            )
-
-    def _append_cycle(self, table: Table, cycle_id: int):
-        self.log.info(f"Append cycle {cycle_id} to table {table['table']}")
-        jinja_env = self.get_template_env()
-
-        pk_is_shakey = any(pk for pk in table["pks"] if pk.endswith("Sha1Key"))
-        if pk_is_shakey:
-            table_sequel = (
-                "Link"
-                if table["table"].endswith("LinkSat") or table["table"].endswith("Link")
-                else ""
-            )
-            pk_name = f"Hdw{table_sequel}Sha1Key"
-
         else:
             pk_name = [pk for pk in table["pks"] if pk != "HdwLoadDateUtc"][0]
 
-        page = self._full_upload_get_start_page(table)
-        page_size = self.get_page_size(table)
+        if not bookkeeper_table["current_page"]:
+            bookkeeper_table["current_page"] = 0
+        page_size = bookkeeper_table["page_size"] or self.page_size
         returned_rows = page_size
         while returned_rows == page_size:
             template = jinja_env.from_string(
@@ -195,26 +227,26 @@ inner join {{ schema }}.{{ table }} t on t.{{ pk_name }} = cte.{{ pk_name }} and
                 schema=table["schema"],
                 table=table["table"],
                 pk_name=pk_name,
-                cycle_id=cycle_id,
+                cycle_id=bookkeeper_table["cycleid"],
                 page_size=self.page_size,
-                page=page,
+                page=bookkeeper_table["current_page"],
             )
-            returned_rows = self._query_to_parquet_and_upload(
+            df = self._query_to_parquet_and_upload(
                 sql=sql,
-                object_name=f"{self.bucket_dir}/{table['table']}/cycle_{cycle_id}/{table['table']}_{cycle_id}_{page}.parquet",
+                object_name=f"{self.bucket_dir}/{table['table']}/cycle_{bookkeeper_table['cycleid']}/{table['table']}_{bookkeeper_table['cycleid']}_{bookkeeper_table['current_page']}.parquet",
                 table_metadata=table,
             )
-            page += 1
-
-        if page == 1 and returned_rows == 0:
-            return
+            returned_rows = len(df)
+            bookkeeper_table["current_page"] += 1
+            if returned_rows == self.page_size:
+                self._cycle_upload_page_uploaded(table, bookkeeper_table, context)
 
         if self._check_parquet(
-            f"{self.bucket_dir}/{table['table']}/cycle_{cycle_id}/{table['table']}_",
+            f"{self.bucket_dir}/{table['table']}/cycle_{bookkeeper_table['cycleid']}/{table['table']}_",
         ):
             self._load_parquets_in_bq(
                 source_uris=[
-                    f"gs://{self.bucket}/{self.bucket_dir}/{table['table']}/cycle_{cycle_id}/{table['table']}_*.parquet"
+                    f"gs://{self.bucket}/{self.bucket_dir}/{table['table']}/cycle_{bookkeeper_table['cycleid']}/{table['table']}_*.parquet"
                 ],
                 destination_project_dataset_table=f"{self.destination_dataset}.{table['table']}",
                 # cluster_fields=self._get_cluster_fields(table), # "Clustering is not supported on non-orderable column 'HdwLinkSha1Key' of type 'STRUCT<list ARRAY<STRUCT<item INT64>>>'"
@@ -222,57 +254,35 @@ inner join {{ schema }}.{{ table }} t on t.{{ pk_name }} = cte.{{ pk_name }} and
                 schema_update_options=["ALLOW_FIELD_ADDITION"],
             )
 
-    def _get_airflow_upsert_hook(self) -> OdbcHook:
-        if not self._airflow_upsert_hook:
-            self._airflow_upsert_hook = OdbcHook(
-                odbc_conn_id=self.odbc_bookkeeper_conn_id
-            )
-        return self._airflow_upsert_hook
+        bookkeeper_table["cycleid"] = (bookkeeper_table["cycleid"] or 0) + 1
+        self._cycle_upload_done(table, bookkeeper_table, context)
 
-    def _get_airflow_hook(self) -> ConnectorXHook:
-        if not self._airflow_hook:
-            self._airflow_hook = ConnectorXHook(
-                connectorx_conn_id=self.connectorx_bookkeeper_conn_id
-            )
-        return self._airflow_hook
-
-    @backoff.on_exception(
-        backoff.expo,
-        (Exception),
-        max_time=600,
-        max_tries=20,
-    )
-    def _get_last_synced_table_cycle_id(self, table: Table) -> Optional[int]:
-        jinja_env = self.get_template_env()
-
-        hook = ConnectorXHook(connectorx_conn_id=self.connectorx_bookkeeper_conn_id)
-        template = jinja_env.from_string(self.sql_last_synced_table_cycle_id)
-        sql = template.render(
-            {
-                "params": {
-                    "schema": table["schema"],
-                    "table": table["table"],
-                }
-            }
-        )
-        df = cast(pl.DataFrame, hook.run(sql))
-        return cast(int, df["cycleid"][0]) if len(df) else None
-
-    def _upsert_current_cycleid(
+    def _cycle_upload_done(
         self,
         table: Table,
-        cycleid: int,
-    ):
-        jinja_env = self.get_template_env()
+        bookkeeper_table: BookkeeperHixDxhTable,
+        context: Context,
+    ) -> None:
+        bookkeeper_table["current_pk"] = None
+        bookkeeper_table["current_page"] = None
+        self._upsert_bookkeeper_table(bookkeeper_table)
 
-        hook = self._get_airflow_upsert_hook()
-        template = jinja_env.from_string(self.sql_upsert_last_synced_table_cycle_id)
-        sql = template.render()
-        hook.run(
-            sql,
-            parameters=[
-                table["schema"],
-                table["table"],
-                cycleid,
-            ],
-        )
+    def _cycle_upload_page_uploaded(
+        self,
+        table: Table,
+        bookkeeper_table: BookkeeperHixDxhTable,
+        context: Context,
+    ) -> None:
+        self._upsert_bookkeeper_table(bookkeeper_table)
+
+    def _full_upload_done(
+        self,
+        table: Table,
+        bookkeeper_table: BookkeeperFullUploadTable,
+        context: Context,
+    ) -> None:
+        bookkeeper_table = cast(BookkeeperHixDxhTable, bookkeeper_table)
+        bookkeeper_table["current_pk"] = None
+        bookkeeper_table["current_page"] = None
+        bookkeeper_table["cycleid"] = self.last_cycle_id + 1
+        self._upsert_bookkeeper_table(bookkeeper_table)

@@ -9,8 +9,6 @@ import polars as pl
 from airflow.utils.context import Context
 from airflow.utils.email import send_email
 
-from libs.lib_azdelta.lib_azdelta.json import DateTimeToIsoFormatEncoder
-
 from ...model.bookkeeper import BookkeeperFullUploadTable, BookkeeperTable
 from ...model.dbmetadata import Table
 from .query_and_upload_to_bq import QueryAndUploadToBigQueryOperator
@@ -275,8 +273,11 @@ ON (target.database = source.database and target.schema = source.schema and targ
         cluster_fields = [
             column
             for i, column in enumerate(table["pks"] or [])
-            if table["pks_type"][i] != "float"
-            and table["pks_type"][i]
-            != "numeric"  # cluster fields cannot be float or numeric
+            if not table["pks_type"][i]
+            in [
+                "float",
+                "numeric",
+                "binary",
+            ]  # cluster fields cannot be float or numeric or binary
         ][:4]
         return cluster_fields

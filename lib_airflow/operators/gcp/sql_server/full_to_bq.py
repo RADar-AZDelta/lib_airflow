@@ -8,11 +8,11 @@ import polars as pl
 from airflow.utils.context import Context
 from airflow.utils.email import send_email
 
-from libs.lib_airflow.lib_airflow.utils.airflow_decoder import AirflowJsonDecoder
-from libs.lib_azdelta.lib_azdelta.json import DateTimeToIsoFormatEncoder
+from libs.lib_airflow.lib_airflow.utils import AirflowEncoder
 
 from ....model.bookkeeper import BookkeeperFullUploadTable, BookkeeperTable
 from ....model.dbmetadata import Table
+from ....utils import AirflowJsonDecoder
 from ..full_to_bq_base import FullUploadToBigQueryBaseOperator
 
 
@@ -55,7 +55,7 @@ SELECT TOP {{ page_size }} *
 FROM {{ schema }}.[{{ table }}] WITH (NOLOCK)
 {%- if where_clause %}
 {{ where_clause }}
-{% endif -%}
+{% endif %}
 ORDER BY {{ order_by }}
 {% endraw %}""",
         sql_get_tables_metadata: str = """{% raw %}
@@ -176,6 +176,7 @@ order by [schema], [table], is_pk desc, ic.index_column_id asc
                 # "smalldatetime",
                 # "time",
                 "uniqueidentifier",
+                "binary",
             ]
             for item in table["pks_type"]
         ):
@@ -323,7 +324,23 @@ order by [schema], [table], is_pk desc, ic.index_column_id asc
                             case "char" | "nchar" | "nvarchar" | "varchar" | "uniqueidentifier":
                                 where_clause += f"'{list(current_pk.values())[index]}'"
                             case "datetime":
-                                where_clause += f"CONVERT(DATETIME, '{list(current_pk.values())[index].isoformat()}', 126)"
+                                where_clause += f"CONVERT(DATETIME, '{list(current_pk.values())[index].isoformat()[:-3]}', 126)"  # yyyy-mm-dd T hh:mm:ss:nnn
+                            case "binary":
+                                where_clause += (
+                                    (
+                                        "0x"
+                                        + "".join(
+                                            [
+                                                "{:02x}".format(x)
+                                                for x in list(current_pk.values())[
+                                                    index
+                                                ]
+                                            ]
+                                        )
+                                    )
+                                    if list(current_pk.values())[index]
+                                    else "0x0"
+                                )
                             case _:  # "date" | "datetime2" | "smalldatetime", | "time",
                                 breakpoint()
                     where_clause += ")"
@@ -351,9 +368,7 @@ order by [schema], [table], is_pk desc, ic.index_column_id asc
                 last_row = df.row(-1)
                 for pk in table["pks"]:
                     current_pk[pk] = last_row[df.columns.index(pk)]
-            bookkeeper_table["current_pk"] = json.dumps(
-                current_pk, cls=DateTimeToIsoFormatEncoder
-            )
+            bookkeeper_table["current_pk"] = json.dumps(current_pk, cls=AirflowEncoder)
             bookkeeper_table["current_page"] += 1
             if returned_rows == self.page_size:
                 self._full_upload_page_uploaded(table, bookkeeper_table)

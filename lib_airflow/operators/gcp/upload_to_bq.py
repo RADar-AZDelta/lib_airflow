@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 from airflow.models.baseoperator import BaseOperator
 from airflow.providers.google.cloud.hooks.bigquery import BigQueryHook
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
+from google.api_core.exceptions import BadRequest
 from google.cloud.bigquery import CopyJob, ExtractJob, LoadJob, QueryJob
 from google.cloud.bigquery.retry import DEFAULT_RETRY as BQ_DEFAULT_RETRY
 
@@ -101,15 +102,32 @@ class UploadToBigQueryOperator(BaseOperator):
         """
         bq_hook = self._get_bq_hook()
 
-        bq_hook.run_load(
-            destination_project_dataset_table=destination_project_dataset_table,
-            source_uris=source_uris,
-            source_format="PARQUET",
-            write_disposition=write_disposition,
-            cluster_fields=cluster_fields,
-            autodetect=True,
-            schema_update_options=schema_update_options,
-        )
+        try:
+            bq_hook.run_load(
+                destination_project_dataset_table=destination_project_dataset_table,
+                source_uris=source_uris,
+                source_format="PARQUET",
+                write_disposition=write_disposition,
+                cluster_fields=cluster_fields,
+                autodetect=True,
+                schema_update_options=schema_update_options,
+            )
+        except BadRequest as br:
+            if br.message.startswith("Incompatible table partitioning specification."):
+                bq_hook.delete_table(
+                    table_id=destination_project_dataset_table
+                )  # delete table when Incompatible table partitioning and try again
+                bq_hook.run_load(
+                    destination_project_dataset_table=destination_project_dataset_table,
+                    source_uris=source_uris,
+                    source_format="PARQUET",
+                    write_disposition=write_disposition,
+                    cluster_fields=cluster_fields,
+                    autodetect=True,
+                    schema_update_options=schema_update_options,
+                )
+            else:
+                raise br
 
     def _check_parquet(self, bucket_object_prefix: str) -> bool:
         """Check if the Parquet file with the specific prefix already exists in the bucket
