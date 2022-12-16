@@ -1,14 +1,12 @@
 import json
-import traceback
-from typing import Callable, Iterable, List, Sequence, Union, cast
+from typing import Sequence, cast
 
 import backoff
-import google.cloud.bigquery as bq
 import polars as pl
 from airflow.utils.context import Context
-from airflow.utils.email import send_email
+from datetime import datetime
 
-from libs.lib_airflow.lib_airflow.utils import AirflowEncoder
+from libs.lib_airflow.lib_airflow.utils import AirflowJsonEncoder
 
 from ....model.bookkeeper import BookkeeperFullUploadTable, BookkeeperTable
 from ....model.dbmetadata import Table
@@ -324,7 +322,9 @@ order by [schema], [table], is_pk desc, ic.index_column_id asc
                             case "char" | "nchar" | "nvarchar" | "varchar" | "uniqueidentifier":
                                 where_clause += f"'{list(current_pk.values())[index]}'"
                             case "datetime":
-                                where_clause += f"CONVERT(DATETIME, '{list(current_pk.values())[index].isoformat()[:-3]}', 126)"  # yyyy-mm-dd T hh:mm:ss:nnn
+                                d: datetime = list(current_pk.values())[index]
+                                iso_format = f"{d.year:04}-{d.month:02}-{d.day:02}T{d.hour:02}:{d.minute:02}:{d.second:02}.{str(d.microsecond).zfill(3):.3s}"
+                                where_clause += f"CONVERT(DATETIME, '{iso_format}', 126)"  # yyyy-mm-dd T hh:mm:ss:nnn
                             case "binary":
                                 where_clause += (
                                     (
@@ -368,7 +368,9 @@ order by [schema], [table], is_pk desc, ic.index_column_id asc
                 last_row = df.row(-1)
                 for pk in table["pks"]:
                     current_pk[pk] = last_row[df.columns.index(pk)]
-            bookkeeper_table["current_pk"] = json.dumps(current_pk, cls=AirflowEncoder)
+            bookkeeper_table["current_pk"] = json.dumps(
+                current_pk, cls=AirflowJsonEncoder
+            )
             bookkeeper_table["current_page"] += 1
             if returned_rows == self.page_size:
                 self._full_upload_page_uploaded(table, bookkeeper_table)

@@ -5,7 +5,7 @@ import json
 from datetime import date, datetime
 
 
-class AirflowEncoder(json.JSONEncoder):
+class AirflowJsonEncoder(json.JSONEncoder):
     # Override the default method
     def default(self, obj):
         if isinstance(obj, (date, datetime)):
