@@ -1,4 +1,5 @@
 import functools as ft
+import json
 import uuid
 from typing import Sequence, Tuple, cast
 
@@ -6,6 +7,7 @@ import backoff
 import google.cloud.bigquery as bq
 import polars as pl
 from airflow.utils.context import Context
+from google.cloud.exceptions import NotFound
 
 from ....hooks.db.connectorx import ConnectorXHook
 from ....model.bookkeeper import (
@@ -14,6 +16,7 @@ from ....model.bookkeeper import (
     BookkeeperTable,
 )
 from ....model.dbmetadata import Table
+from ....utils import AirflowJsonEncoder
 from .full_to_bq import SqlServerFullUploadToBigQueryOperator
 
 
@@ -32,6 +35,7 @@ class SqlServerChangeTrackinToBigQueryOperator(SqlServerFullUploadToBigQueryOper
         "sql_bq_merge",
         "sql_change_tracking_table_pk_columns",
         "sql_incremental_upload",
+        "sql_cleanup_changetable",
     )
 
     def __init__(
@@ -77,33 +81,37 @@ WHEN NOT MATCHED
     VALUES({{ insert_values }})
 {% endraw %}""",
         sql_get_tables_metadata: str = """{% raw %}
-SELECT DB_NAME(DB_ID()) as [database]
-    ,s.name as [schema]
+SELECT DB_NAME(DB_ID()) AS [database]
+    ,s.name AS [schema]
 	,t.name AS [table]
-	,col.name as col_name
+	,col.name AS col_name
 	,type_name(col.system_type_id) AS system_type
 	,type_name(col.user_type_id) AS user_type
-	,IIF(ic.index_column_id is null, cast(0 as bit), cast(1 as bit)) as is_pk
+	,IIF(ic.index_column_id is null, CAST(0 AS bit), CAST(1 AS bit)) AS is_pk
 	,ic.index_column_id
 FROM sys.change_tracking_tables tr
-INNER JOIN sys.tables t on t.object_id = tr.object_id
-INNER JOIN sys.schemas s on s.schema_id = t.schema_id
-inner join sys.columns col on col.object_id = t.object_id
-left outer join sys.indexes pk on t.object_id = pk.object_id and pk.is_primary_key = 1 
-left outer join sys.index_columns ic on ic.object_id = pk.object_id and ic.index_id = pk.index_id and col.column_id = ic.column_id
+INNER JOIN sys.tables t ON t.object_id = tr.object_id
+INNER JOIN sys.schemas s ON s.schema_id = t.schema_id
+INNER JOIN sys.columns col ON col.object_id = t.object_id
+LEFT OUTER JOIN sys.indexes pk ON t.object_id = pk.object_id AND pk.is_primary_key = 1 
+LEFT OUTER JOIN sys.index_columns ic ON ic.object_id = pk.object_id AND ic.index_id = pk.index_id AND col.column_id = ic.column_id
 {%- if where_clause %}
 {{ where_clause }}
 {% endif %}
-order by [schema], [table], is_pk desc, ic.index_column_id asc
+ORDER BY [schema], [table], is_pk DESC, ic.index_column_id ASC
 {% endraw %}""",
         sql_change_tracking_table_pk_columns: str = """{% raw %}
-select col.name as pk_col_name
-from sys.tables t
-inner join sys.indexes pk on t.object_id = pk.object_id
-inner join sys.index_columns ic on ic.object_id = pk.object_id and ic.index_id = pk.index_id
-inner join sys.columns col on pk.object_id = col.object_id and col.column_id = ic.column_id
-where pk.is_primary_key = 1
-    and t.name = '{{ change_tracking_table }}'
+SELECT col.name AS pk_col_name
+FROM sys.tables t
+INNER JOIN sys.indexes pk ON t.object_id = pk.object_id
+INNER JOIN sys.index_columns ic ON ic.object_id = pk.object_id AND ic.index_id = pk.index_id
+INNER JOIN sys.columns col ON pk.object_id = col.object_id AND col.column_id = ic.column_id
+WHERE pk.is_primary_key = 1
+    AND t.name = '{{ change_tracking_table }}'
+{% endraw %}""",
+        sql_cleanup_changetable: str = """{% raw %}
+DELETE FROM {{ dataset }}.CHANGETABLE
+WHERE TABLE = '{{ table }}'
 {% endraw %}""",
         **kwargs,
     ) -> None:
@@ -116,6 +124,7 @@ where pk.is_primary_key = 1
         self.sql_bq_merge = sql_bq_merge
         self.sql_get_tables_metadata = sql_get_tables_metadata
         self.sql_change_tracking_table_pk_columns = sql_change_tracking_table_pk_columns
+        self.sql_cleanup_changetable = sql_cleanup_changetable
 
         self._airflow_hook = None
         self._airflow_upsert_hook = None
@@ -126,27 +135,21 @@ where pk.is_primary_key = 1
             self._get_change_tracking_current_version()
         )
 
-    @backoff.on_exception(
-        backoff.expo,
-        (Exception),
-        max_time=600,
-        max_tries=5,
-    )
-    def execute_table(
+    def _execute_table_ipml(
         self,
+        upload_strategy: str,
         table: Table,
         bookkeeper_table: BookkeeperTable,
         context: Context,
     ):
-        self.log.info("Table: %s", table["table"])
-
-        upload_strategy = self._choose_upload_strategy(table, bookkeeper_table)
-
         bookkeeper_table = cast(BookkeeperChangeTrackingTable, bookkeeper_table)
         if upload_strategy == "incremental_upload":
             self._incremental_upload(context, table, bookkeeper_table)
         else:
-            super().execute_table(table, bookkeeper_table, context)
+            self._cleanup_changetable(table)
+            super()._execute_table_ipml(
+                upload_strategy, table, bookkeeper_table, context
+            )
             self._incremental_upload(context, table, bookkeeper_table)
 
     def _empty_bookkeeper_table_record(self, table: Table) -> BookkeeperTable:
@@ -218,6 +221,20 @@ where pk.is_primary_key = 1
         self.log.info("Upload strategy: %s", upload_strategy)
         return upload_strategy
 
+    def _cleanup_changetable(self, table: Table):
+        try:
+            jinja_env = self.get_template_env()
+            template = jinja_env.from_string(self.sql_cleanup_changetable)
+            sql = template.render(
+                dataset=self.destination_dataset, table=table["table"]
+            )
+            self._run_bq_job(
+                sql,
+                job_id=f"airflow_CHANGETABLE_cleanup_{table['table']}_{str(uuid.uuid4())}",
+            )
+        except NotFound:
+            pass
+
     def _incremental_upload(
         self,
         context: Context,
@@ -248,104 +265,143 @@ where pk.is_primary_key = 1
             map(lambda pk: f"t.[{pk[0]}] = ct.[{pk[1]}]", pks),
         )
 
-        last_synchronization_version = (
-            cast(int, bookkeeper_table["version"])
-            if bookkeeper_table["version"]
-            else self.change_tracking_current_version
-        )
-
-        template = jinja_env.from_string(self.sql_incremental_upload)
-        sql = template.render(
-            schema=table["schema"],
-            table=table["table"],
-            change_tracking_table=change_tracking_table,
-            pk_columns=", ".join(map(lambda pk: f"ct.[{pk[1]}]", pks)),
-            columns=", ".join(map(lambda column: f"t.[{column}]", table["columns"])),
-            last_synchronization_version=last_synchronization_version,
-            join_on_clause=join_on_clause,
-            page_size=self.page_size,
-        )
-        df: pl.DataFrame = self._query(sql)
-
-        if df.is_empty():
-            if not bookkeeper_table["version"]:
-                bookkeeper_table["version"] = self.change_tracking_current_version
-                self._incremental_upload_done(table, bookkeeper_table, context)
-            return
-
-        df = self._check_dataframe_for_bigquery_safe_column_names(df)
-        last_synchronization_version = df["SYS_CHANGE_VERSION"].max()
-        df = df.unique(subset=change_tracking_pk_columns, keep="last")
-        for pk in (
-            pk for pk in pks if pk[0] != pk[1]
-        ):  # replace/remove the change_tracking_table pk's if table not equals change_tracking_table
-            df.replace(pk[0], df[pk[1]])
-            df.drop_in_place(pk[1])
-        df = df.with_column(
-            pl.when(pl.col("SYS_CHANGE_OPERATION") == "D")
-            .then(pl.lit(True))
-            .otherwise(pl.lit(False))
-            .alias("deleted")
-        )  # add deleted column
-        df.drop_in_place("SYS_CHANGE_OPERATION")
-        df.drop_in_place("SYS_CHANGE_VERSION")
-
-        self._upload_parquet(
-            df=df,
-            object_name=f"{self.bucket_dir}/{table['table']}/incremental/{table['table']}_{last_synchronization_version}.parquet",
-            table_metadata=table,
-        )
-
-        self._load_parquets_in_bq(
-            source_uris=[
-                f"gs://{self.bucket}/{self.bucket_dir}/{table['table']}/incremental/{table['table']}_{last_synchronization_version}.parquet"
-            ],
-            destination_project_dataset_table=f"{self.destination_dataset}._incremental_{table['table']}",
-            cluster_fields=self._get_cluster_fields(table),
-        )
-
-        template = jinja_env.from_string(self.sql_bq_merge)
-
-        safe_pks = self._generate_bigquery_safe_column_names(table["pks"])
-        safe_columns = self._generate_bigquery_safe_column_names(table["columns"])
-
-        insert_columns = ", ".join(map(lambda column: f"`{column}`", safe_pks))
-        insert_values = ", ".join(map(lambda column: f"`{column}`", safe_pks))
-
-        if table["columns"]:
-            insert_columns = (
-                insert_columns
-                + ", "
-                + ", ".join(map(lambda column: f"`{column}`", safe_columns))
-            )
-            insert_values = (
-                insert_values
-                + ", "
-                + ", ".join(map(lambda column: f"`{column}`", safe_columns))
+        page_size = bookkeeper_table["page_size"] or self.page_size
+        returned_rows = page_size
+        while returned_rows == page_size:
+            last_synchronization_version = (
+                cast(int, bookkeeper_table["version"])
+                if bookkeeper_table["version"]
+                else self.change_tracking_current_version
             )
 
-        sql = template.render(
-            dataset=self.destination_dataset,
-            table=table["table"],
-            condition_clause=" and ".join(
-                map(lambda column: f"t.`{column}` = s.`{column}`", safe_pks)
-            ),
-            update_clause=", ".join(
-                map(lambda column: f"t.`{column}` = s.`{column}`", safe_columns)
-            ),
-            insert_columns=insert_columns,
-            insert_values=insert_values,
-        )
-        self._run_bq_job(
-            sql,
-            job_id=f"airflow_{table['schema']}_{table['table']}_{str(uuid.uuid4())}",
-        )
-        self._delete_bq_table(
-            dataset_table=f"{self.destination_dataset}._incremental_{table['table']}",
-        )
+            template = jinja_env.from_string(self.sql_incremental_upload)
+            sql = template.render(
+                schema=table["schema"],
+                table=table["table"],
+                change_tracking_table=change_tracking_table,
+                pk_columns=", ".join(map(lambda pk: f"ct.[{pk[1]}]", pks)),
+                columns=", ".join(
+                    map(lambda column: f"t.[{column}]", table["columns"])
+                ),
+                last_synchronization_version=last_synchronization_version,
+                join_on_clause=join_on_clause,
+                page_size=self.page_size,
+            )
+            df: pl.DataFrame = self._query(sql)
 
-        bookkeeper_table["version"] = self.change_tracking_current_version
-        self._incremental_upload_done(table, bookkeeper_table, context)
+            if df.is_empty():
+                if not bookkeeper_table["version"]:
+                    bookkeeper_table["version"] = self.change_tracking_current_version
+                    self._incremental_upload_done(table, bookkeeper_table, context)
+                return
+
+            returned_rows = len(df)
+
+            df = self._check_dataframe_for_bigquery_safe_column_names(df)
+            last_synchronization_version = df["SYS_CHANGE_VERSION"].max()
+
+            # ----------------------------------------------
+            # Upload metadata to CHANGEABLE
+            # ----------------------------------------------
+            df_changetable = (
+                df.with_column(
+                    pl.struct(change_tracking_pk_columns)
+                    .apply(lambda x: json.dumps(x, cls=AirflowJsonEncoder))
+                    .alias("KEY")
+                )
+                .select(["SYS_CHANGE_VERSION", "SYS_CHANGE_OPERATION", "KEY"])
+                .with_column(pl.lit(table["table"]).alias("TABLE"))
+            )
+
+            self._upload_parquet(
+                df=df_changetable,
+                object_name=f"{self.bucket_dir}/CHANGETABLE/{table['table']}/{table['table']}_{last_synchronization_version}.parquet",
+            )
+
+            self._load_parquets_in_bq(
+                source_uris=[
+                    f"gs://{self.bucket}/{self.bucket_dir}/CHANGETABLE/{table['table']}/{table['table']}_{last_synchronization_version}.parquet"
+                ],
+                destination_project_dataset_table=f"{self.destination_dataset}.CHANGETABLE",
+                cluster_fields=["TABLE", "SYS_CHANGE_VERSION"],
+                write_disposition=bq.WriteDisposition.WRITE_APPEND,
+            )
+
+            # ----------------------------------------------
+            # Upload changes to table
+            # ----------------------------------------------
+            df = df.unique(subset=change_tracking_pk_columns, keep="last")
+
+            for pk in (
+                pk for pk in pks if pk[0] != pk[1]
+            ):  # replace/remove the change_tracking_table pk's if table not equals change_tracking_table
+                df.replace(pk[0], df[pk[1]])
+                df.drop_in_place(pk[1])
+            df = df.with_column(
+                pl.when(pl.col("SYS_CHANGE_OPERATION") == "D")
+                .then(pl.lit(True))
+                .otherwise(pl.lit(False))
+                .alias("deleted")
+            )  # add deleted column
+            df.drop_in_place("SYS_CHANGE_OPERATION")
+            df.drop_in_place("SYS_CHANGE_VERSION")
+
+            self._upload_parquet(
+                df=df,
+                object_name=f"{self.bucket_dir}/{table['table']}/incremental/{table['table']}_{last_synchronization_version}.parquet",
+                table_metadata=table,
+            )
+
+            self._load_parquets_in_bq(
+                source_uris=[
+                    f"gs://{self.bucket}/{self.bucket_dir}/{table['table']}/incremental/{table['table']}_{last_synchronization_version}.parquet"
+                ],
+                destination_project_dataset_table=f"{self.destination_dataset}._incremental_{table['table']}",
+                cluster_fields=self._get_cluster_fields(table),
+            )
+
+            template = jinja_env.from_string(self.sql_bq_merge)
+
+            safe_pks = self._generate_bigquery_safe_column_names(table["pks"])
+            safe_columns = self._generate_bigquery_safe_column_names(table["columns"])
+
+            insert_columns = ", ".join(map(lambda column: f"`{column}`", safe_pks))
+            insert_values = ", ".join(map(lambda column: f"`{column}`", safe_pks))
+
+            if table["columns"]:
+                insert_columns = (
+                    insert_columns
+                    + ", "
+                    + ", ".join(map(lambda column: f"`{column}`", safe_columns))
+                )
+                insert_values = (
+                    insert_values
+                    + ", "
+                    + ", ".join(map(lambda column: f"`{column}`", safe_columns))
+                )
+
+            sql = template.render(
+                dataset=self.destination_dataset,
+                table=table["table"],
+                condition_clause=" and ".join(
+                    map(lambda column: f"t.`{column}` = s.`{column}`", safe_pks)
+                ),
+                update_clause=", ".join(
+                    map(lambda column: f"t.`{column}` = s.`{column}`", safe_columns)
+                ),
+                insert_columns=insert_columns,
+                insert_values=insert_values,
+            )
+            self._run_bq_job(
+                sql,
+                job_id=f"airflow_{table['schema']}_{table['table']}_{str(uuid.uuid4())}",
+            )
+            self._delete_bq_table(
+                dataset_table=f"{self.destination_dataset}._incremental_{table['table']}",
+            )
+
+            bookkeeper_table["version"] = self.change_tracking_current_version
+            self._incremental_upload_done(table, bookkeeper_table, context)
 
     def _incremental_upload_done(
         self,

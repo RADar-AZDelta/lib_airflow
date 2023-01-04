@@ -1,16 +1,14 @@
 import json
+from datetime import datetime
 from typing import Sequence, cast
 
 import backoff
 import polars as pl
 from airflow.utils.context import Context
-from datetime import datetime
-
-from libs.lib_airflow.lib_airflow.utils import AirflowJsonEncoder
 
 from ....model.bookkeeper import BookkeeperFullUploadTable, BookkeeperTable
 from ....model.dbmetadata import Table
-from ....utils import AirflowJsonDecoder
+from ....utils import AirflowJsonDecoder, AirflowJsonEncoder
 from ..full_to_bq_base import FullUploadToBigQueryBaseOperator
 
 
@@ -57,23 +55,23 @@ FROM {{ schema }}.[{{ table }}] WITH (NOLOCK)
 ORDER BY {{ order_by }}
 {% endraw %}""",
         sql_get_tables_metadata: str = """{% raw %}
-SELECT DB_NAME(DB_ID()) as [database]
-    ,s.name as [schema]
+SELECT DB_NAME(DB_ID()) AS [database]
+    ,s.name AS [schema]
 	,t.name AS [table]
-	,col.name as col_name
+	,col.name AS col_name
 	,type_name(col.system_type_id) AS system_type
 	,type_name(col.user_type_id) AS user_type
-	,IIF(ic.index_column_id is null, cast(0 as bit), cast(1 as bit)) as is_pk
+	,IIF(ic.index_column_id is null, CAST(0 AS bit), CAST(1 AS bit)) AS is_pk
 	,ic.index_column_id
 FROM sys.tables t
-INNER JOIN sys.schemas s on s.schema_id = t.schema_id
-inner join sys.columns col on col.object_id = t.object_id
-left outer join sys.indexes pk on t.object_id = pk.object_id and pk.is_primary_key = 1 
-left outer join sys.index_columns ic on ic.object_id = pk.object_id and ic.index_id = pk.index_id and col.column_id = ic.column_id
+INNER JOIN sys.schemas s ON s.schema_id = t.schema_id
+INNER JOIN sys.columns col ON col.object_id = t.object_id
+LEFT OUTER JOIN sys.indexes pk ON t.object_id = pk.object_id AND pk.is_primary_key = 1 
+LEFT OUTER JOIN sys.index_columns ic ON ic.object_id = pk.object_id AND ic.index_id = pk.index_id AND col.column_id = ic.column_id
 {%- if where_clause %}
 {{ where_clause }}
 {% endif %}
-order by [schema], [table], is_pk desc, ic.index_column_id asc
+ORDER BY [schema], [table], is_pk DESC, ic.index_column_id ASC
 {% endraw %}""",
         **kwargs,
     ) -> None:

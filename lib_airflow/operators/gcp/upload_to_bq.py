@@ -165,7 +165,7 @@ class UploadToBigQueryOperator(BaseOperator):
         self.log.debug(f"Rows fetched: {len(df)}")
 
         if returned_rows > 0:
-            if self.func_modify_data:
+            if self.func_modify_data and table_metadata:
                 df = self.func_modify_data(df, table_metadata)
             with self._write_local_data_files(df) as file_to_upload:
                 file_to_upload.flush()

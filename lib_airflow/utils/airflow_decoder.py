@@ -1,7 +1,6 @@
 # Copyright 2022 RADar-AZDelta
 # SPDX-License-Identifier: gpl3+
 
-import base64
 import json
 import re
 from datetime import datetime
