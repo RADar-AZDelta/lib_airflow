@@ -21,6 +21,7 @@ setup(
         "polars",
         "pyarrow",
         "connectorx",
+        "cachetools",
     ],
     classifiers=[
         "Programming Language :: Python :: 3",
