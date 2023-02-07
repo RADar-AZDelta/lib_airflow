@@ -232,7 +232,7 @@ WHERE TABLE = '{{ table }}'
                 sql,
                 job_id=f"airflow_CHANGETABLE_cleanup_{table['table']}_{str(uuid.uuid4())}",
             )
-        except NotFound:
+        except NotFound:  # CHANGETABLE not yet created in BigQuery
             pass
 
     def _incremental_upload(
@@ -328,7 +328,7 @@ WHERE TABLE = '{{ table }}'
             )
 
             # ----------------------------------------------
-            # Upload changes to table
+            # Upload and merge changes to table
             # ----------------------------------------------
             df = df.unique(subset=change_tracking_pk_columns, keep="last")
 
@@ -400,8 +400,12 @@ WHERE TABLE = '{{ table }}'
                 dataset_table=f"{self.destination_dataset}._incremental_{table['table']}",
             )
 
-            bookkeeper_table["version"] = self.change_tracking_current_version
-            self._incremental_upload_done(table, bookkeeper_table, context)
+            if returned_rows == page_size:
+                bookkeeper_table["version"] = cast(int, last_synchronization_version)
+                self._incremental_upload_done(table, bookkeeper_table, context)
+
+        bookkeeper_table["version"] = self.change_tracking_current_version
+        self._incremental_upload_done(table, bookkeeper_table, context)
 
     def _incremental_upload_done(
         self,
