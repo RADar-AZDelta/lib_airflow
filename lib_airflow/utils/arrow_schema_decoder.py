@@ -16,7 +16,7 @@ class ArrowSchemaJsonDecoder(json.JSONDecoder):
             if isinstance(v, str):
                 match v:
                     case "integer":
-                        dct[k] = pa.uint32()
+                        dct[k] = pa.uint64()
                     case "string":
                         dct[k] = pa.utf8()
                     case "date":
@@ -25,6 +25,8 @@ class ArrowSchemaJsonDecoder(json.JSONDecoder):
                         dct[k] = pa.timestamp("ms", tz="Europe/Brussels")
                     case "bool":
                         dct[k] = pa.bool_()
+                    case "number":
+                        dct[k] = pa.float64()
             elif isinstance(v, list) and all(isinstance(item, tuple) for item in v):
                 dct[k] = pa.struct(v)
         return [(k, v) for k, v in dct.items()]

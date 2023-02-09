@@ -1,27 +1,35 @@
 import json
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, cast
+from http import HTTPStatus
+from typing import (Any, Callable, Dict, List, Optional, Sequence, Tuple,
+                    Union, cast)
 
 import jinja2
-import pyarrow as pa
+import polars as pl
+from airflow.exceptions import AirflowException
 from airflow.providers.http.hooks.http import HttpHook
 from airflow.utils.context import Context
+from polars.datatypes import Schema as pl_Schema
 
 from .upload_to_bq import UploadToBigQueryOperator
 
 
 class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
-    template_fields: Sequence[str] = ("bucket", "bucket_dir", "auth_token", "endpoints")
+    template_fields: Sequence[str] = (
+        "bucket",
+        "bucket_dir",
+        "endpoints",
+    )
 
     def __init__(
         self,
         http_conn_id: str,
-        auth_token: str | None,
         endpoints: dict[str, Tuple[str, Any]] | str,
         destination_dataset: str,
         func_create_merge_statement: Callable[
-            [str, str, str, Any, pa.Table, jinja2.Environment], str
+            [str, str, str, Any, pl.DataFrame, jinja2.Environment], str
         ],
+        func_get_auth_token: Callable[[], str] | None = None,
         func_get_request_data: Callable[
             [str, str, Any, int, int], Optional[Union[Dict[str, Any], str]]
         ]
@@ -30,11 +38,11 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
             [str, str, Any, Any], list[Any]
         ]
         | None = None,
-        func_get_arrow_schema: Callable[[str, str, Any, Any], pa.schema] | None = None,
-        func_get_parquet_upload_path: Callable[[str, str, Any, int, pa.Table], str]
+        func_get_polars_schema: Callable[[str, str, Any, Any], pl_Schema] | None = None,
+        func_get_parquet_upload_path: Callable[[str, str, Any, pl.DataFrame], str]
         | None = None,
         func_get_cluster_fields: Callable[[str, str, Any], list[str]] | None = None,
-        func_batch_uploaded: Callable[[str, str, Any, int, pa.Table], None]
+        func_batch_uploaded: Callable[[str, str, Any, pl.DataFrame], None]
         | None = None,
         page_size: int = 1000,
         upload_after_nbr_of_pages=100,
@@ -47,7 +55,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
 
         self.http_conn_id = http_conn_id
         self.http_method = http_method
-        self.auth_token = auth_token
+        self.func_get_auth_token = func_get_auth_token
         self.json_decoder = json_decoder
 
         self.endpoints = endpoints
@@ -57,7 +65,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         self.func_extract_records_from_response_data = (
             func_extract_records_from_response_data
         )
-        self.func_get_arrow_schema = func_get_arrow_schema
+        self.func_get_polars_schema = func_get_polars_schema
         self.func_get_parquet_upload_path = func_get_parquet_upload_path
         self.func_get_cluster_fields = func_get_cluster_fields
         self.func_batch_uploaded = func_batch_uploaded
@@ -85,6 +93,10 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         upload_batch = 0
         upload_batch_page = 0
 
+        auth_token = None
+        if self.func_get_auth_token:
+            auth_token = self.func_get_auth_token()
+
         while current_page_size == self.page_size:
             request_data = None
             if self.func_get_request_data:
@@ -96,19 +108,28 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
                     self.page_size,
                 )
 
+            headers = {}
+            if auth_token:
+                headers["Authorization"] = auth_token
+
             try:
                 response = http.run(
                     endpoint=endpoint_url,
                     data=request_data,
-                    headers={
-                        "Authorization": self.auth_token,
-                    },
+                    headers=headers,
                     # extra_options={"check_response": False},
                 )
-
-            except Exception as ex:
+            except AirflowException as ex:
                 self.log.warning("%s", ex)
-                raise ex
+                if (
+                    ex.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
+                    and ex.args[0] == "401:Unauthorized"
+                    and self.func_get_auth_token
+                ):
+                    auth_token = self.func_get_auth_token()
+                    continue
+                else:
+                    raise ex
 
             response_data = json.loads(response.text, cls=self.json_decoder)
             current_page_data = (
@@ -126,7 +147,10 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
 
             if upload_batch_page >= (self.upload_every_nbr_of_pages - 1):
                 self._convert_to_parquet_and_upload(
-                    all_data, upload_batch, endpoint_name, endpoint_url, endpoint_data
+                    all_data,
+                    endpoint_name,
+                    endpoint_url,
+                    endpoint_data,
                 )
                 all_data = []
                 upload_batch += 1
@@ -138,36 +162,37 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
 
         if all_data:
             self._convert_to_parquet_and_upload(
-                all_data, upload_batch, endpoint_name, endpoint_url, endpoint_data
+                all_data, endpoint_name, endpoint_url, endpoint_data
             )
 
     def _convert_to_parquet_and_upload(
         self,
         all_data: list[Any],
-        upload_page: int,
         endpoint_name: str,
         endpoint_url: str,
         endpoint_data: Any,
     ):
-        arrow_schema = None
-        if self.func_get_arrow_schema:
-            arrow_schema = self.func_get_arrow_schema(
+        polars_schema = None
+        if self.func_get_polars_schema:
+            polars_schema = self.func_get_polars_schema(
                 endpoint_name, endpoint_url, endpoint_data, all_data
             )
 
-        table = pa.Table.from_pylist(all_data, schema=arrow_schema)
+        df = pl.from_dicts(all_data, schema=polars_schema)
+        df = self._check_dataframe_for_bigquery_safe_column_names(df)
+        endpoint_name = self._generate_bigquery_safe_table_name(
+            endpoint_name
+        )  # not yet implemented
 
         if self.func_get_parquet_upload_path:
             upload_path = self.func_get_parquet_upload_path(
-                endpoint_name, endpoint_url, endpoint_data, upload_page, table
+                endpoint_name, endpoint_url, endpoint_data, df
             )
             object_name: str = f"{self.bucket_dir}/{upload_path}"
         else:
             object_name: str = f"{self.bucket_dir}/{endpoint_name}.parquet"
 
-        self._upload_parquet(
-            table, object_name=object_name, table_metadata=endpoint_data
-        )
+        self._upload_parquet(df, object_name=object_name, table_metadata=endpoint_data)
 
         cluster_fields = None
         if self.func_get_cluster_fields:
@@ -186,7 +211,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
             endpoint_name,
             endpoint_url,
             endpoint_data,
-            table,
+            df,
             self.get_template_env(),
         )
         self._run_bq_job(
@@ -199,5 +224,5 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
 
         if self.func_batch_uploaded:
             self.func_batch_uploaded(
-                endpoint_name, endpoint_url, endpoint_data, upload_page, table
+                endpoint_name, endpoint_url, endpoint_data, df
             )

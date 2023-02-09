@@ -16,7 +16,7 @@ class PolarsSchemaJsonDecoder(json.JSONDecoder):
             if isinstance(v, str):
                 match v:
                     case "integer":
-                        dct[k] = pl.UInt32
+                        dct[k] = pl.UInt64
                     case "string":
                         dct[k] = pl.Utf8
                     case "date":
@@ -25,6 +25,8 @@ class PolarsSchemaJsonDecoder(json.JSONDecoder):
                         dct[k] = pl.Datetime
                     case "bool":
                         dct[k] = pl.Boolean
+                    case "number":
+                        dct[k] = pl.Float64()
             elif isinstance(v, dict):
                 dct[k] = pl.Struct(v)
         return dct

@@ -34,7 +34,6 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
         self._db_hook_type = db_hook_type
 
         self._db_hook = None
-        self._re_pattern_bigquery_safe_column_names = re.compile(r"[^_0-9a-zA-Z]+")
 
     def _query_to_parquet_and_upload(
         self,
@@ -99,39 +98,3 @@ class QueryAndUploadToBigQueryOperator(UploadToBigQueryOperator):
             else:
                 raise Exception(f"Unknown db hook type '{self._db_hook_type}'")
         return self._db_hook
-
-    def _check_dataframe_for_bigquery_safe_column_names(self, df: pl.DataFrame):
-        column_names = df.columns
-        safe_column_names = self._generate_bigquery_safe_column_names(column_names)
-
-        for idx, safe_column_name in enumerate(safe_column_names):
-            column_name = column_names[idx]
-            if safe_column_name != column_name:
-                df = df.with_column(df[column_name].alias(safe_column_name)).drop(
-                    column_name
-                )
-        return df
-
-    def _generate_bigquery_safe_column_names(
-        self, column_names: List[str]
-    ) -> List[str]:
-        safe_column_names = column_names.copy()
-
-        for idx, column_name in enumerate(column_names):
-            # Fields must contain only letters, numbers, and underscores, start with a letter or underscore, and be at most 300 characters long
-            safe_column_name = self._re_pattern_bigquery_safe_column_names.sub(
-                "_", column_name
-            )
-            if safe_column_name[0].isdigit():
-                safe_column_name = f"_{safe_column_name}"
-            while (
-                safe_column_name
-                in safe_column_names[:idx] + safe_column_names[idx + 1 :]
-            ):
-                safe_column_name = f"_{safe_column_name}"
-            safe_column_name = safe_column_name[:300]
-
-            if column_name != safe_column_name:
-                safe_column_names[idx] = safe_column_name
-
-        return safe_column_names
