@@ -26,7 +26,7 @@ class PolarsSchemaJsonDecoder(json.JSONDecoder):
                     case "bool":
                         dct[k] = pl.Boolean
                     case "number":
-                        dct[k] = pl.Float64()
+                        dct[k] = pl.Float64
             elif isinstance(v, dict):
                 dct[k] = pl.Struct(v)
         return dct

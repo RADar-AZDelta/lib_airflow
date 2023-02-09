@@ -1,15 +1,14 @@
 import json
 import uuid
 from http import HTTPStatus
-from typing import (Any, Callable, Dict, List, Optional, Sequence, Tuple,
-                    Union, cast)
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, cast
 
 import jinja2
 import polars as pl
+import pyarrow as pa
 from airflow.exceptions import AirflowException
 from airflow.providers.http.hooks.http import HttpHook
 from airflow.utils.context import Context
-from polars.datatypes import Schema as pl_Schema
 
 from .upload_to_bq import UploadToBigQueryOperator
 
@@ -38,7 +37,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
             [str, str, Any, Any], list[Any]
         ]
         | None = None,
-        func_get_polars_schema: Callable[[str, str, Any, Any], pl_Schema] | None = None,
+        func_get_arrow_schema: Callable[[str, str, Any, Any], pa.schema] | None = None,
         func_get_parquet_upload_path: Callable[[str, str, Any, pl.DataFrame], str]
         | None = None,
         func_get_cluster_fields: Callable[[str, str, Any], list[str]] | None = None,
@@ -65,7 +64,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         self.func_extract_records_from_response_data = (
             func_extract_records_from_response_data
         )
-        self.func_get_polars_schema = func_get_polars_schema
+        self.func_get_arrow_schema = func_get_arrow_schema
         self.func_get_parquet_upload_path = func_get_parquet_upload_path
         self.func_get_cluster_fields = func_get_cluster_fields
         self.func_batch_uploaded = func_batch_uploaded
@@ -172,13 +171,15 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         endpoint_url: str,
         endpoint_data: Any,
     ):
-        polars_schema = None
-        if self.func_get_polars_schema:
-            polars_schema = self.func_get_polars_schema(
+        arrow_schema = None
+        if self.func_get_arrow_schema:
+            arrow_schema = self.func_get_arrow_schema(
                 endpoint_name, endpoint_url, endpoint_data, all_data
             )
 
-        df = pl.from_dicts(all_data, schema=polars_schema)
+        # df = pl.from_dicts(all_data, schema=polars_schema) # doesn't work well
+        table = pa.Table.from_pylist(all_data, schema=arrow_schema)
+        df = pl.from_arrow(table)
         df = self._check_dataframe_for_bigquery_safe_column_names(df)
         endpoint_name = self._generate_bigquery_safe_table_name(
             endpoint_name
@@ -223,6 +224,4 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         )
 
         if self.func_batch_uploaded:
-            self.func_batch_uploaded(
-                endpoint_name, endpoint_url, endpoint_data, df
-            )
+            self.func_batch_uploaded(endpoint_name, endpoint_url, endpoint_data, df)
