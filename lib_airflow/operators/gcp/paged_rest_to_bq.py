@@ -1,7 +1,20 @@
 import json
+import time
+import traceback
 import uuid
 from http import HTTPStatus
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 import jinja2
 import polars as pl
@@ -9,6 +22,7 @@ import pyarrow as pa
 from airflow.exceptions import AirflowException
 from airflow.providers.http.hooks.http import HttpHook
 from airflow.utils.context import Context
+from airflow.utils.email import send_email
 
 from .upload_to_bq import UploadToBigQueryOperator
 
@@ -48,6 +62,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         bucket_dir: str = "upload",
         http_method="GET",
         json_decoder=json.JSONDecoder,
+        to_email_on_error: list[str] | Iterable[str] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -73,6 +88,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         self.upload_every_nbr_of_pages = upload_after_nbr_of_pages
         self.bucket_dir = bucket_dir
         self.destination_dataset = destination_dataset
+        self.to_email_on_error = to_email_on_error
 
     def execute(self, context: "Context"):
         http = HttpHook(self.http_method, self.http_conn_id)
@@ -81,7 +97,23 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
             dict[str, Tuple[str, Any]], self.endpoints
         ).items():
             self.log.info(f"Endpoint: {name}")
-            self._upload_rest_endpoint(http, name, url, endpoint_data)
+            str_error = None
+            try:
+                self._upload_rest_endpoint(http, name, url, endpoint_data)
+            except Exception as ex:
+                str_error = traceback.format_exc()
+                self.log.error("Error on endpoint '%s': %s", name, ex)
+
+            if str_error:
+                try:
+                    if self.to_email_on_error:
+                        send_email(
+                            to=self.to_email_on_error,
+                            subject=f"AIRFLOW ERROR in dag '{self.dag_id}' for REST endpoint '{name}'",
+                            html_content=str_error.replace("\n", "<br />"),
+                        )
+                except:
+                    pass
 
     def _upload_rest_endpoint(
         self, http: HttpHook, endpoint_name: str, endpoint_url: str, endpoint_data: Any
@@ -125,6 +157,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
                     and ex.args[0] == "401:Unauthorized"
                     and self.func_get_auth_token
                 ):
+                    time.sleep(5)  # wait 5 sec
                     auth_token = self.func_get_auth_token()
                     continue
                 else:

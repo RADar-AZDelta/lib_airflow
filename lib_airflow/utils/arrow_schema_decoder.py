@@ -16,7 +16,7 @@ class ArrowSchemaJsonDecoder(json.JSONDecoder):
             if isinstance(v, str):
                 match v:
                     case "integer":
-                        dct[k] = pa.uint64()
+                        dct[k] = pa.int64()
                     case "string":
                         dct[k] = pa.utf8()
                     case "date":

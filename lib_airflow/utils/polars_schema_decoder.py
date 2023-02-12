@@ -16,7 +16,7 @@ class PolarsSchemaJsonDecoder(json.JSONDecoder):
             if isinstance(v, str):
                 match v:
                     case "integer":
-                        dct[k] = pl.UInt64
+                        dct[k] = pl.Int64
                     case "string":
                         dct[k] = pl.Utf8
                     case "date":
