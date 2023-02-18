@@ -44,7 +44,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         ],
         func_get_auth_token: Callable[[], str] | None = None,
         func_get_request_data: Callable[
-            [str, str, Any, int, int], Optional[Union[Dict[str, Any], str]]
+            [str, str, Any, int, int, list[Any]], Optional[Union[Dict[str, Any], str]]
         ]
         | None = None,
         func_extract_records_from_response_data: Callable[
@@ -55,12 +55,16 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         func_get_parquet_upload_path: Callable[[str, str, Any, pl.DataFrame], str]
         | None = None,
         func_get_cluster_fields: Callable[[str, str, Any], list[str]] | None = None,
-        func_batch_uploaded: Callable[[str, str, Any, pl.DataFrame], None]
+        func_batch_uploaded: Callable[
+            [str, str, Any, pl.DataFrame, jinja2.Environment], None
+        ]
         | None = None,
+        func_fetch_more_data: Callable[[str, str, Any, Any], bool] | None = None,
         page_size: int = 1000,
         upload_after_nbr_of_pages=100,
         bucket_dir: str = "upload",
         http_method="GET",
+        authorization_header_name="Authorization",
         json_decoder=json.JSONDecoder,
         to_email_on_error: list[str] | Iterable[str] | None = None,
         **kwargs,
@@ -71,6 +75,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         self.http_method = http_method
         self.func_get_auth_token = func_get_auth_token
         self.json_decoder = json_decoder
+        self.authorization_header_name = authorization_header_name
 
         self.endpoints = endpoints
 
@@ -83,6 +88,9 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         self.func_get_parquet_upload_path = func_get_parquet_upload_path
         self.func_get_cluster_fields = func_get_cluster_fields
         self.func_batch_uploaded = func_batch_uploaded
+        self.func_fetch_more_data = (
+            func_fetch_more_data if func_fetch_more_data else self._fetch_more_data
+        )
 
         self.page_size = page_size
         self.upload_every_nbr_of_pages = upload_after_nbr_of_pages
@@ -115,6 +123,15 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
                 except:
                     pass
 
+    def _fetch_more_data(
+        self,
+        endpoint_name: str,
+        endpoint_url,
+        endpoint_data: Any,
+        current_page_data: list[Any],
+    ):
+        return len(current_page_data) == self.page_size
+
     def _upload_rest_endpoint(
         self, http: HttpHook, endpoint_name: str, endpoint_url: str, endpoint_data: Any
     ):
@@ -123,12 +140,16 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         all_data = []
         upload_batch = 0
         upload_batch_page = 0
+        current_page_data: list[Any] = []
+        response_data: Any = None
 
         auth_token = None
         if self.func_get_auth_token:
             auth_token = self.func_get_auth_token()
 
-        while current_page_size == self.page_size:
+        while self.func_fetch_more_data(
+            endpoint_name, endpoint_url, endpoint_data, response_data
+        ):
             request_data = None
             if self.func_get_request_data:
                 request_data = self.func_get_request_data(
@@ -137,11 +158,12 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
                     endpoint_data,
                     request_page,
                     self.page_size,
+                    current_page_data,
                 )
 
             headers = {}
             if auth_token:
-                headers["Authorization"] = auth_token
+                headers[self.authorization_header_name] = auth_token
 
             try:
                 response = http.run(
@@ -161,6 +183,10 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
                     auth_token = self.func_get_auth_token()
                     continue
                 else:
+                    if all_data:
+                        self._convert_to_parquet_and_upload(
+                            all_data, endpoint_name, endpoint_url, endpoint_data
+                        )
                     raise ex
 
             response_data = json.loads(response.text, cls=self.json_decoder)
@@ -174,7 +200,6 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
             if not current_page_data:
                 break
 
-            current_page_size = len(current_page_data)
             all_data.extend(current_page_data)
 
             if upload_batch_page >= (self.upload_every_nbr_of_pages - 1):
@@ -257,4 +282,10 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         )
 
         if self.func_batch_uploaded:
-            self.func_batch_uploaded(endpoint_name, endpoint_url, endpoint_data, df)
+            self.func_batch_uploaded(
+                endpoint_name,
+                endpoint_url,
+                endpoint_data,
+                df,
+                self.get_template_env(),
+            )
