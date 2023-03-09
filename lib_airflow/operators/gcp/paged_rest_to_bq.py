@@ -44,7 +44,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         ],
         func_get_auth_token: Callable[[], str] | None = None,
         func_get_request_data: Callable[
-            [str, str, Any, int, int, list[Any]], Optional[Union[Dict[str, Any], str]]
+            [str, str, Any, int, int, Any], Optional[Union[Dict[str, Any], str]]
         ]
         | None = None,
         func_extract_records_from_response_data: Callable[
@@ -56,10 +56,10 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         | None = None,
         func_get_cluster_fields: Callable[[str, str, Any], list[str]] | None = None,
         func_batch_uploaded: Callable[
-            [str, str, Any, pl.DataFrame, jinja2.Environment], None
+            [str, str, Any, pl.DataFrame, jinja2.Environment, Any], None
         ]
         | None = None,
-        func_fetch_more_data: Callable[[str, str, Any, Any], bool] | None = None,
+        func_fetch_more_data: Callable[[str, str, Any, int, Any], bool] | None = None,
         page_size: int = 1000,
         upload_after_nbr_of_pages=100,
         bucket_dir: str = "upload",
@@ -128,15 +128,17 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         endpoint_name: str,
         endpoint_url,
         endpoint_data: Any,
-        current_page_data: list[Any],
+        request_page: int,
+        current_page_data: list[Any] | None,
     ):
-        return len(current_page_data) == self.page_size
+        if request_page == 0:
+            return True
+        return current_page_data and len(current_page_data) == self.page_size
 
     def _upload_rest_endpoint(
         self, http: HttpHook, endpoint_name: str, endpoint_url: str, endpoint_data: Any
     ):
         request_page = 0
-        current_page_size = self.page_size
         all_data = []
         upload_batch = 0
         upload_batch_page = 0
@@ -148,7 +150,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
             auth_token = self.func_get_auth_token()
 
         while self.func_fetch_more_data(
-            endpoint_name, endpoint_url, endpoint_data, response_data
+            endpoint_name, endpoint_url, endpoint_data, request_page, current_page_data
         ):
             request_data = None
             if self.func_get_request_data:
@@ -158,7 +160,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
                     endpoint_data,
                     request_page,
                     self.page_size,
-                    current_page_data,
+                    response_data,
                 )
 
             headers = {}
@@ -185,7 +187,11 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
                 else:
                     if all_data:
                         self._convert_to_parquet_and_upload(
-                            all_data, endpoint_name, endpoint_url, endpoint_data
+                            all_data,
+                            endpoint_name,
+                            endpoint_url,
+                            endpoint_data,
+                            response_data,
                         )
                     raise ex
 
@@ -197,17 +203,13 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
                 if self.func_extract_records_from_response_data
                 else response_data
             )
-            if not current_page_data:
-                break
 
-            all_data.extend(current_page_data)
+            if current_page_data:
+                all_data.extend(current_page_data)
 
-            if upload_batch_page >= (self.upload_every_nbr_of_pages - 1):
+            if all_data and upload_batch_page >= (self.upload_every_nbr_of_pages - 1):
                 self._convert_to_parquet_and_upload(
-                    all_data,
-                    endpoint_name,
-                    endpoint_url,
-                    endpoint_data,
+                    all_data, endpoint_name, endpoint_url, endpoint_data, response_data
                 )
                 all_data = []
                 upload_batch += 1
@@ -219,7 +221,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
 
         if all_data:
             self._convert_to_parquet_and_upload(
-                all_data, endpoint_name, endpoint_url, endpoint_data
+                all_data, endpoint_name, endpoint_url, endpoint_data, response_data
             )
 
     def _convert_to_parquet_and_upload(
@@ -228,6 +230,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         endpoint_name: str,
         endpoint_url: str,
         endpoint_data: Any,
+        last_response_data: Any,
     ):
         arrow_schema = None
         if self.func_get_arrow_schema:
@@ -288,4 +291,5 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
                 endpoint_data,
                 df,
                 self.get_template_env(),
+                last_response_data,
             )
