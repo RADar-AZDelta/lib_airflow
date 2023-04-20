@@ -1,10 +1,12 @@
 import json
 import re
+import traceback
 from tempfile import NamedTemporaryFile
-from typing import List, Sequence
+from typing import Iterable, List, Sequence
 
 import polars as pl
 from airflow.models import Variable
+from airflow.utils.email import send_email
 from elasticsearch import Elasticsearch
 
 from . import UploadToBigQueryOperator
@@ -25,6 +27,7 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
         es_batch_size=1000,
         pq_page_size=100000,
         bucket_dir: str = "upload",
+        to_email_on_error: list[str] | Iterable[str] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -35,6 +38,7 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
         self.pq_page_size = pq_page_size
         self.bucket_dir = bucket_dir
         self.destination_dataset = destination_dataset
+        self.to_email_on_error = to_email_on_error
 
     def execute(self, context):
         api_key = Variable.get("awell_api_key")
@@ -42,7 +46,23 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
 
         for num, index in enumerate(self.indexes):
             self.log.info(f"ES index: {index}")
-            self._full_upload_es_table(client, index)
+            str_error = None
+            try:
+                self._full_upload_es_table(client, index)
+            except Exception as ex:
+                str_error = traceback.format_exc()
+                self.log.error("Error upploading ES index '%s': %s", index, ex)
+
+            if str_error:
+                try:
+                    if self.to_email_on_error:
+                        send_email(
+                            to=self.to_email_on_error,
+                            subject=f"AIRFLOW ERROR in dag '{self.dag_id}' for ES index '{index}'",
+                            html_content=str_error.replace("\n", "<br />"),
+                        )
+                except:
+                    pass
 
     def _full_upload_es_table(self, client: Elasticsearch, index: str):
         # keep track of the number of the documents returned
@@ -83,7 +103,6 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
 
         # use a 'while' iterator to loop over document 'hits'
         while len(resp["hits"]["hits"]):
-
             # make a request using the Scroll API
             resp = client.scroll(
                 scroll_id=old_scroll_id,
@@ -110,7 +129,7 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
             if doc_count > self.pq_page_size:
                 json_file.write("]")
                 json_file.close()
-                df = pl.read_json(file=tmp_file_handle.name, json_lines=False)
+                df = pl.read_json(file=tmp_file_handle.name)
                 self._upload_parquet(
                     df,
                     object_name=f"{self.bucket_dir}/{table}/full/{table}_{page}.parquet",
@@ -126,8 +145,8 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
         json_file.close()
         if doc_count == 0 and page == 0:
             self.log.warning(f"Nothing to FULL upload for index {index}")
-        else:
-            df = pl.read_json(file=tmp_file_handle.name, json_lines=False)
+        elif doc_count > 0:
+            df = pl.read_json(file=tmp_file_handle.name)
             self._upload_parquet(
                 df,
                 object_name=f"{self.bucket_dir}/{table}/full/{table}_{page}.parquet",
