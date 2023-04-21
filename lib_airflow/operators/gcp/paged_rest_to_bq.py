@@ -39,12 +39,13 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         http_conn_id: str,
         endpoints: dict[str, Tuple[str, Any]] | str,
         destination_dataset: str,
-        func_modify_dataframe: Callable[
-            [str, str, str, Any, pl.DataFrame], pl.DataFrame
-        ],
         func_create_merge_statement: Callable[
             [str, str, str, Any, pl.DataFrame, jinja2.Environment], str
         ],
+        func_modify_dataframe: Callable[
+            [str, str, str, Any, pl.DataFrame], pl.DataFrame
+        ]
+        | None = None,
         func_get_auth_token: Callable[[], str] | None = None,
         func_get_request_data: Callable[
             [str, str, Any, int, int, Any], Optional[Union[Dict[str, Any], str]]
@@ -154,7 +155,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
             auth_token = self.func_get_auth_token()
 
         while self.func_fetch_more_data(
-            endpoint_name, endpoint_url, endpoint_data, request_page, current_page_data
+            endpoint_name, endpoint_url, endpoint_data, request_page, response_data
         ):
             request_data = None
             if self.func_get_request_data:
