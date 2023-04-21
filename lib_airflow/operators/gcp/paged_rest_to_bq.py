@@ -39,6 +39,9 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         http_conn_id: str,
         endpoints: dict[str, Tuple[str, Any]] | str,
         destination_dataset: str,
+        func_modify_dataframe: Callable[
+            [str, str, str, Any, pl.DataFrame], pl.DataFrame
+        ],
         func_create_merge_statement: Callable[
             [str, str, str, Any, pl.DataFrame, jinja2.Environment], str
         ],
@@ -79,6 +82,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
 
         self.endpoints = endpoints
 
+        self.func_modify_dataframe = func_modify_dataframe
         self.func_create_merge_statement = func_create_merge_statement
         self.func_get_request_data = func_get_request_data
         self.func_extract_records_from_response_data = (
@@ -245,6 +249,14 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         endpoint_name = self._generate_bigquery_safe_table_name(
             endpoint_name
         )  # not yet implemented
+        if self.func_modify_dataframe:
+            df = self.func_modify_dataframe(
+                self.destination_dataset,
+                endpoint_name,
+                endpoint_url,
+                endpoint_data,
+                df,
+            )
 
         if self.func_get_parquet_upload_path:
             upload_path = self.func_get_parquet_upload_path(
