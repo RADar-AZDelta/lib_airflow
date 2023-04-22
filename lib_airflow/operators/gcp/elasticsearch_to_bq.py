@@ -2,9 +2,10 @@ import json
 import re
 import traceback
 from tempfile import NamedTemporaryFile
-from typing import Iterable, List, Sequence
+from typing import Any, Callable, Iterable, List, Sequence
 
 import polars as pl
+import pyarrow as pa
 from airflow.models import Variable
 from airflow.utils.email import send_email
 from elasticsearch import Elasticsearch
@@ -27,6 +28,7 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
         es_batch_size=1000,
         pq_page_size=100000,
         bucket_dir: str = "upload",
+        func_modify_doc: Callable[[Any], Any] | None = None,
         to_email_on_error: list[str] | Iterable[str] | None = None,
         **kwargs,
     ) -> None:
@@ -38,10 +40,11 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
         self.pq_page_size = pq_page_size
         self.bucket_dir = bucket_dir
         self.destination_dataset = destination_dataset
+        self.func_modify_doc = func_modify_doc
         self.to_email_on_error = to_email_on_error
 
     def execute(self, context):
-        api_key = Variable.get("awell_api_key")
+        api_key = Variable.get(self.api_key_var_id)
         client = Elasticsearch(self.elastic_url, api_key=api_key)
 
         for num, index in enumerate(self.indexes):
@@ -89,8 +92,11 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
 
         for doc in resp["hits"]["hits"]:
             self.log.debug(f'ID: {doc["_id"]}')
-            self.log.debug(f'DOC: {json.dumps(doc["_source"])}')
-            docs.append(doc["_source"])
+            source = doc["_source"]
+            self.log.debug(f"DOC: {json.dumps(source)}")
+            if self.func_modify_doc:
+                source = self.func_modify_doc(source)
+            docs.append(source)
             doc_count += 1
         self.log.debug(f"DOC COUNT: {doc_count}")
 
@@ -115,12 +121,17 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
             # iterate over the document hits for each 'scroll'
             for doc in resp["hits"]["hits"]:
                 self.log.debug(f'ID: {doc["_id"]}')
-                self.log.debug(f'DOC: {json.dumps(doc["_source"])}')
-                docs.append(doc["_source"])
+                source = doc["_source"]
+                self.log.debug(f"DOC: {json.dumps(source)}")
+                if self.func_modify_doc:
+                    source = self.func_modify_doc(source)
+                docs.append(source)
                 doc_count += 1
             self.log.debug(f"DOC COUNT: {doc_count}")
 
-            if doc_count > self.pq_page_size:
+            if doc_count >= self.pq_page_size:
+                # table = pa.Table.from_pylist(docs)
+                # df = pl.from_arrow(table)
                 df = pl.from_dicts(docs)
                 self._upload_parquet(
                     df,
@@ -134,6 +145,8 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
         if doc_count == 0 and page == 0:
             self.log.warning(f"Nothing to FULL upload for index {index}")
         elif doc_count > 0:
+            # table = pa.Table.from_pylist(docs)
+            # df = pl.from_arrow(table)
             df = pl.from_dicts(docs)
             self._upload_parquet(
                 df,
