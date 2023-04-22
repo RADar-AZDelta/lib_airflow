@@ -85,18 +85,14 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
 
         table = re.sub(r"[^a-zA-Z_\-]", "", index)
 
-        tmp_file_handle = NamedTemporaryFile(delete=True)
-        json_file = open(tmp_file_handle.name, "w")
-        json_file.write("[")
+        docs = []
 
         for doc in resp["hits"]["hits"]:
             self.log.debug(f'ID: {doc["_id"]}')
             self.log.debug(f'DOC: {json.dumps(doc["_source"])}')
-            if doc_count > 0:
-                json_file.write(",\n")
-            json_file.write(json.dumps(doc["_source"], indent=2))
+            docs.append(doc["_source"])
             doc_count += 1
-            self.log.debug(f"DOC COUNT: {doc_count}")
+        self.log.debug(f"DOC COUNT: {doc_count}")
 
         #  keep track of pass scroll _id
         old_scroll_id = resp["_scroll_id"]
@@ -120,38 +116,30 @@ class ElasticSearchToBigQueryOperator(UploadToBigQueryOperator):
             for doc in resp["hits"]["hits"]:
                 self.log.debug(f'ID: {doc["_id"]}')
                 self.log.debug(f'DOC: {json.dumps(doc["_source"])}')
-                if doc_count > 0:
-                    json_file.write(",\n")
-                json_file.write(json.dumps(doc["_source"], indent=2))
+                docs.append(doc["_source"])
                 doc_count += 1
-                self.log.debug(f"DOC COUNT: {doc_count}")
+            self.log.debug(f"DOC COUNT: {doc_count}")
 
             if doc_count > self.pq_page_size:
-                json_file.write("]")
-                json_file.close()
-                df = pl.read_json(file=tmp_file_handle.name)
+                df = pl.from_dicts(docs)
                 self._upload_parquet(
                     df,
                     object_name=f"{self.bucket_dir}/{table}/full/{table}_{page}.parquet",
+                    table_metadata=object(),
                 )
-                tmp_file_handle.close()
-                tmp_file_handle = NamedTemporaryFile(delete=True)
-                json_file = open(tmp_file_handle.name, "w")
-                json_file.write("[")
+                docs = []
                 doc_count = 0
                 page += 1
 
-        json_file.write("]")
-        json_file.close()
         if doc_count == 0 and page == 0:
             self.log.warning(f"Nothing to FULL upload for index {index}")
         elif doc_count > 0:
-            df = pl.read_json(file=tmp_file_handle.name)
+            df = pl.from_dicts(docs)
             self._upload_parquet(
                 df,
                 object_name=f"{self.bucket_dir}/{table}/full/{table}_{page}.parquet",
+                table_metadata=object(),
             )
-        tmp_file_handle.close()
 
         if self._check_parquet(
             f"{self.bucket_dir}/{table}/full/{table}_",
