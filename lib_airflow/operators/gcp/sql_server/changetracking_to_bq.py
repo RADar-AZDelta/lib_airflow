@@ -304,13 +304,13 @@ WHERE TABLE = '{{ table }}'
             # Upload metadata to CHANGEABLE
             # ----------------------------------------------
             df_changetable = (
-                df.with_column(
+                df.with_columns(
                     pl.struct(change_tracking_pk_columns)
                     .apply(lambda x: json.dumps(x, cls=AirflowJsonEncoder))
                     .alias("KEY")
                 )
                 .select(["SYS_CHANGE_VERSION", "SYS_CHANGE_OPERATION", "KEY"])
-                .with_column(pl.lit(table["table"]).alias("TABLE"))
+                .with_columns(pl.lit(table["table"]).alias("TABLE"))
             )
 
             self._upload_parquet(
@@ -337,7 +337,7 @@ WHERE TABLE = '{{ table }}'
             ):  # replace/remove the change_tracking_table pk's if table not equals change_tracking_table
                 df.replace(pk[0], df[pk[1]])
                 df.drop_in_place(pk[1])
-            df = df.with_column(
+            df = df.with_columns(
                 pl.when(pl.col("SYS_CHANGE_OPERATION") == "D")
                 .then(pl.lit(True))
                 .otherwise(pl.lit(False))

@@ -248,7 +248,7 @@ class UploadToBigQueryOperator(BaseOperator):
         for idx, safe_column_name in enumerate(safe_column_names):
             column_name = column_names[idx]
             if safe_column_name != column_name:
-                df = df.with_column(df[column_name].alias(safe_column_name)).drop(
+                df = df.with_columns(df[column_name].alias(safe_column_name)).drop(
                     column_name
                 )
         return df
