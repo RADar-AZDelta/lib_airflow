@@ -1,3 +1,34 @@
+[project]
+name = "lib_airflow"
+version = "0.0.1"
+authors = [
+  { name="Lammertyn Pieter-Jan", email="pieter-jan.lammertyn@azdelta.be" },
+]
+description = "Custom Airflow operators and hooks"
+readme = "README.md"
+license = { file="LICENSE" }
+keywords= ["Airflow"]
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    'polars >= 0.20.13',
+    'connectorx >= 0.3.2',
+    'pyarrow >= 15.0.0',
+    'cachetools >= 5.3.3',
+    'apache-airflow-providers-http >= 4.9.1',
+    'apache-airflow-providers-odbc >= 4.4.1',
+    'apache-airflow-providers-google >= 10.15.0',
+    #'lib_azdelta @ git+ssh://git@github.com/RADar-AZDelta/lib_azdelta@main',
+]
+
+[project.urls]
+"Source Code" = "https://github.com/RADar-AZDelta/lib_airflow"
+"Bug Tracker" = "https://github.com/RADar-AZDelta/lib_airflow/issues"
+
 [build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta:__legacy__"
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
