@@ -189,7 +189,10 @@ class UploadToBigQueryOperator(BaseOperator):
 
         if isinstance(df, pl.DataFrame):
             # df = df.to_arrow() # convert to an Arrow Table
-            df.write_parquet(file=tmp_file_handle.name, compression="snappy")
+            df.write_parquet(file=tmp_file_handle.name, compression="snappy",use_pyarrow=True, pyarrow_options={
+                'coerce_timestamps': "ms",
+                'allow_truncated_timestamps': True
+            })
         else:
             pq.write_table(
                 table=df,

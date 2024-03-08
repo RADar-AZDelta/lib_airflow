@@ -74,7 +74,7 @@ class ConnectorXHook(BaseHook):
         else:
             conn = unquote(self.connection.get_uri())
 
-        return cx.read_sql(
+        df = cx.read_sql(
             conn=conn,
             query=query,  # type: ignore
             return_type=return_type,
@@ -83,6 +83,7 @@ class ConnectorXHook(BaseHook):
             partition_range=partition_range,
             partition_num=partition_num,
         )
+        return df
 
     def test_connection(self):
         """Tests the connection by executing a select 1 query"""
