@@ -188,21 +188,25 @@ class UploadToBigQueryOperator(BaseOperator):
         self.log.info("Writing parquet files to: '%s'", tmp_file_handle.name)
 
         if isinstance(df, pl.DataFrame):
-            df = df.to_arrow() # convert to an Arrow Table
-        #     df.write_parquet(file=tmp_file_handle.name, compression="snappy",use_pyarrow=True, pyarrow_options={
-        #         #'coerce_timestamps': "ms",
-        #         'allow_truncated_timestamps': True,
-        #         'use_deprecated_int96_timestamps': True    
-        #     })
-        # else:
-        pq.write_table(
-            table=df,
-            where=tmp_file_handle.name,
-            compression="snappy",
-            #coerce_timestamps="ms",
-            allow_truncated_timestamps=True,
-            use_deprecated_int96_timestamps=True
-        )
+            df.write_parquet(
+                file=tmp_file_handle.name,
+                compression="snappy",
+                use_pyarrow=True,
+                pyarrow_options={
+                    "coerce_timestamps": "ms",
+                    "allow_truncated_timestamps": True,
+                    # "use_deprecated_int96_timestamps": True
+                },
+            )
+        else:
+            pq.write_table(
+                table=df,
+                where=tmp_file_handle.name,
+                compression="snappy",
+                coerce_timestamps="ms",
+                allow_truncated_timestamps=True,
+                # use_deprecated_int96_timestamps=True
+            )
         return tmp_file_handle
 
     def _upload_to_gcs(
