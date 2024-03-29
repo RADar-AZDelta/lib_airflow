@@ -31,12 +31,12 @@ class BigQueryToOtherGCSOperator(FullUploadToBigQueryBaseOperator):
         dataset: str,
         sql_paged_full_upload: str = """{% raw %}
 select *
-from {{ project }}.{{ dataset }}.{{ table }}
+from `{{ project }}.{{ dataset }}.{{ table }}`
 LIMIT {{ page_size }} OFFSET {{ page * page_size }}
 {% endraw %}""",
         sql_get_tables_metadata: str = """{% raw %}
 select table_catalog, table_schema, table_name, column_name, ordinal_position, is_nullable, data_type, clustering_ordinal_position
-from {{ project }}.{{ dataset }}.INFORMATION_SCHEMA.COLUMNS
+from `{{ project }}.{{ dataset }}.INFORMATION_SCHEMA.COLUMNS`
 {%- if where_clause %}
 {{ where_clause }}
 {% endif %}

@@ -42,11 +42,11 @@ class SqlServerChangeTrackinToBigQueryOperator(SqlServerFullUploadToBigQueryOper
         self,
         sql_get_bookkeeper_table: str = """{% raw %}
 select database, schema, table, disabled, page_size, current_pk, current_page, version, change_tracking_table
-from {{ bookkeeper_dataset }}.{{ bookkeeper_table }}
+from `{{ bookkeeper_dataset }}.{{ bookkeeper_table }}`
 where database = '{{ database }}' and schema = '{{ schema }}' and table = '{{ table }}'
 {% endraw %}""",
         sql_upsert_bookkeeper_table: str = """{% raw %}
-MERGE {{ bookkeeper_dataset }}.{{ bookkeeper_table }} AS target
+MERGE `{{ bookkeeper_dataset }}.{{ bookkeeper_table }}` AS target
 USING (SELECT @database as database, @schema as schema, @table as table, @current_pk as current_pk, @current_page as current_page, @version as version) AS source
 ON (target.database = source.database and target.schema = source.schema and target.table = source.table)
     WHEN MATCHED THEN
@@ -67,8 +67,8 @@ OFFSET 0 ROWS
 FETCH NEXT {{ page_size }} ROWS ONLY
 {% endraw %}""",
         sql_bq_merge: str = """{% raw %}
-MERGE INTO {{ dataset }}.{{ table }} AS t
-USING {{ dataset }}._incremental_{{ table }} s
+MERGE INTO `{{ dataset }}.{{ table }}` AS t
+USING `{{ dataset }}._incremental_{{ table }}` s
 ON {{ condition_clause }}
 WHEN MATCHED AND s.deleted = true 
     THEN DELETE
@@ -110,7 +110,7 @@ WHERE pk.is_primary_key = 1
     AND t.name = '{{ change_tracking_table }}'
 {% endraw %}""",
         sql_cleanup_changetable: str = """{% raw %}
-DELETE FROM {{ dataset }}.CHANGETABLE
+DELETE FROM `{{ dataset }}.CHANGETABLE`
 WHERE TABLE = '{{ table }}'
 {% endraw %}""",
         **kwargs,

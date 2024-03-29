@@ -30,11 +30,11 @@ class HixDwhToBigQueryOperator(SqlServerFullUploadToBigQueryOperator):
         self,
         sql_get_bookkeeper_table: str = """{% raw %}
 select database, schema, table, disabled, page_size, current_pk, current_page, cycleid
-from {{ bookkeeper_dataset }}.{{ bookkeeper_table }}
+from `{{ bookkeeper_dataset }}.{{ bookkeeper_table }}`
 where database = '{{ database }}' and schema = '{{ schema }}' and table = '{{ table }}'
 {% endraw %}""",
         sql_upsert_bookkeeper_table: str = """{% raw %}
-MERGE {{ bookkeeper_dataset }}.{{ bookkeeper_table }} AS target
+MERGE `{{ bookkeeper_dataset }}.{{ bookkeeper_table }}` AS target
 USING (SELECT @database as database, @schema as schema, @table as table, @current_pk as current_pk, @current_page as current_page, @cycleid as cycleid) AS source
 ON (target.database = source.database and target.schema = source.schema and target.table = source.table)
     WHEN MATCHED THEN
