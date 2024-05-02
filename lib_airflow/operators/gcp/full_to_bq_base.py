@@ -88,14 +88,14 @@ ON (target.database = source.database and target.schema = source.schema and targ
             try:
                 bookkeeper_table = self._get_bookkeeper_table(table)
                 if bookkeeper_table and bookkeeper_table["disabled"]:
-                    self.log.info(f"Table %s is disabled!", table["table"])
+                    self.log.info("Table %s is disabled!", table["table"])
                     continue
                 if self.func_before_execute_table:
                     continue_table_execute = self.func_before_execute_table(
                         table, context
                     )
                     if not continue_table_execute:
-                        self.log.info(f"Skipping table %s", table["table"])
+                        self.log.info("Skipping table %s", table["table"])
                         continue
                 self.execute_table(
                     table,

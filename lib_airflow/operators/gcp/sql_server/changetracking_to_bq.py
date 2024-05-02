@@ -25,12 +25,14 @@ class SqlServerChangeTrackinToBigQueryOperator(SqlServerFullUploadToBigQueryOper
         "bucket",
         "bucket_dir",
         "page_size",
+        "sql_get_bookkeeper_tables_referring_to_other_change_tracking_table",
         "sql_get_bookkeeper_table",
         "sql_upsert_bookkeeper_table",
         "sql_paged_full_upload",
         "sql_paged_full_upload_with_cte",
         "sql_topped_full_upload",
         "sql_get_tables_metadata",
+        "sql_get_tables_metadata_referring_to_other_change_tracking_table",
         "sql_get_change_tracking_version",
         "sql_bq_merge",
         "sql_change_tracking_table_pk_columns",
@@ -40,6 +42,11 @@ class SqlServerChangeTrackinToBigQueryOperator(SqlServerFullUploadToBigQueryOper
 
     def __init__(
         self,
+        sql_get_bookkeeper_tables_referring_to_other_change_tracking_table: str = """{% raw %}
+select database, schema, table, disabled, page_size, current_pk, current_page, version, change_tracking_table
+from `{{ bookkeeper_dataset }}.{{ bookkeeper_table }}`
+where change_tracking_table is not null
+{% endraw %}""",
         sql_get_bookkeeper_table: str = """{% raw %}
 select database, schema, table, disabled, page_size, current_pk, current_page, version, change_tracking_table
 from `{{ bookkeeper_dataset }}.{{ bookkeeper_table }}`
@@ -100,6 +107,25 @@ LEFT OUTER JOIN sys.index_columns ic ON ic.object_id = pk.object_id AND ic.index
 {% endif %}
 ORDER BY [schema], [table], is_pk DESC, ic.index_column_id ASC
 {% endraw %}""",
+        sql_get_tables_metadata_referring_to_other_change_tracking_table: str = """{% raw %}
+SELECT DB_NAME(DB_ID()) AS [database]
+    ,s.name AS [schema]
+	,t.name AS [table]
+	,col.name AS col_name
+	,type_name(col.system_type_id) AS system_type
+	,type_name(col.user_type_id) AS user_type
+	,IIF(ic.index_column_id is null, CAST(0 AS bit), CAST(1 AS bit)) AS is_pk
+	,ic.index_column_id
+FROM sys.tables t
+INNER JOIN sys.schemas s ON s.schema_id = t.schema_id
+INNER JOIN sys.columns col ON col.object_id = t.object_id
+LEFT OUTER JOIN sys.indexes pk ON t.object_id = pk.object_id AND pk.is_primary_key = 1 
+LEFT OUTER JOIN sys.index_columns ic ON ic.object_id = pk.object_id AND ic.index_id = pk.index_id AND col.column_id = ic.column_id
+{%- if where_clause %}
+{{ where_clause }}
+{% endif %}
+ORDER BY [schema], [table], is_pk DESC, ic.index_column_id ASC
+{% endraw %}""",
         sql_change_tracking_table_pk_columns: str = """{% raw %}
 SELECT col.name AS pk_col_name
 FROM sys.tables t
@@ -117,12 +143,18 @@ WHERE TABLE = '{{ table }}'
     ) -> None:
         super().__init__(**kwargs)
 
+        self.sql_get_bookkeeper_tables_referring_to_other_change_tracking_table = (
+            sql_get_bookkeeper_tables_referring_to_other_change_tracking_table
+        )
         self.sql_get_bookkeeper_table = sql_get_bookkeeper_table
         self.sql_upsert_bookkeeper_table = sql_upsert_bookkeeper_table
         self.sql_get_change_tracking_version = sql_get_change_tracking_version
         self.sql_incremental_upload = sql_incremental_upload
         self.sql_bq_merge = sql_bq_merge
         self.sql_get_tables_metadata = sql_get_tables_metadata
+        self.sql_get_tables_metadata_referring_to_other_change_tracking_table = (
+            sql_get_tables_metadata_referring_to_other_change_tracking_table
+        )
         self.sql_change_tracking_table_pk_columns = sql_change_tracking_table_pk_columns
         self.sql_cleanup_changetable = sql_cleanup_changetable
 
@@ -235,6 +267,95 @@ WHERE TABLE = '{{ table }}'
         except NotFound:  # CHANGETABLE not yet created in BigQuery
             pass
 
+    def _get_tables_referring_to_other_change_tracking_table(self) -> list[str]:
+        jinja_env = self.get_template_env()
+
+        hook = self._get_bq_hook()
+        template = jinja_env.from_string(
+            self.sql_get_bookkeeper_tables_referring_to_other_change_tracking_table
+        )
+        sql = template.render(
+            bookkeeper_dataset=self.bookkeeper_dataset,
+            bookkeeper_table=self.bookkeeper_table,
+        )
+        client = hook.get_client()
+        job_config = bq.QueryJobConfig(
+            query_parameters=[],
+        )
+        query_job = client.query(sql, job_config=job_config, location=self.gcp_location)
+        rows = query_job.result()
+        df = pl.from_arrow(rows.to_arrow())
+        return cast(pl.DataFrame, df).get_column("table").to_list()
+
+    @backoff.on_exception(
+        backoff.expo,
+        (Exception),
+        max_time=600,
+        max_tries=20,
+    )
+    def _get_tables_chunk(self, table_names: list[str] | None) -> list[Table]:
+        tables_referring_to_other_change_tracking_table = (
+            self._get_tables_referring_to_other_change_tracking_table()
+        )
+
+        jinja_env = self.get_template_env()
+        template = jinja_env.from_string(self.sql_get_tables_metadata)
+
+        where_clause = None
+        if table_names:
+            where_clause = "WHERE t.name IN ('" + "','".join(table_names) + "')"
+        sql = template.render(where_clause=where_clause)
+        df = self._query(sql=sql)
+
+        if tables_referring_to_other_change_tracking_table:
+            if table_names:
+                tables_referring_to_other_change_tracking_table = list(
+                    set(table_names)
+                    & set(tables_referring_to_other_change_tracking_table)
+                )
+
+            if tables_referring_to_other_change_tracking_table:
+                template = jinja_env.from_string(
+                    self.sql_get_tables_metadata_referring_to_other_change_tracking_table
+                )
+                where_clause = (
+                    "WHERE t.name IN ('"
+                    + "','".join(tables_referring_to_other_change_tracking_table)
+                    + "')"
+                )
+                sql = template.render(where_clause=where_clause)
+                df2 = self._query(sql=sql)
+                df = pl.concat([df, df2])
+
+        tables = cast(
+            list[Table],
+            df.sort(by=["database", "schema", "table", "index_column_id"])
+            .groupby(
+                ["database", "schema", "table"],
+            )
+            .agg(
+                [
+                    pl.col("col_name").filter(pl.col("is_pk") == True).alias("pks"),
+                    pl.col("system_type")
+                    .filter(pl.col("is_pk") == True)
+                    .alias("pks_type"),
+                    pl.col("col_name")
+                    .filter(pl.col("is_pk") == False)
+                    .alias("columns"),
+                    pl.col("system_type")
+                    .filter(pl.col("is_pk") == False)
+                    .alias("columns_type"),
+                ]
+            )
+            .sort(by=["database", "schema", "table"])
+            .to_dicts(),
+        )
+        tables_chunk = [
+            tables[i :: self.nbr_of_chunks] for i in range(self.nbr_of_chunks)
+        ]
+
+        return tables_chunk[self.chunk]
+
     def _incremental_upload(
         self,
         context: Context,
@@ -334,9 +455,8 @@ WHERE TABLE = '{{ table }}'
 
             for pk in (
                 pk for pk in pks if pk[0] != pk[1]
-            ):  # replace/remove the change_tracking_table pk's if table not equals change_tracking_table
-                df.replace(pk[0], df[pk[1]])
-                df.drop_in_place(pk[1])
+            ):  # rename the change_tracking_table pk's if table not equals change_tracking_table
+                df = df.rename({pk[1]: pk[0]})
             df = df.with_columns(
                 pl.when(pl.col("SYS_CHANGE_OPERATION") == "D")
                 .then(pl.lit(True))

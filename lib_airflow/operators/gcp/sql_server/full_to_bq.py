@@ -94,7 +94,7 @@ ORDER BY [schema], [table], is_pk DESC, ic.index_column_id ASC
 
         where_clause = None
         if table_names:
-            where_clause = f"WHERE t.name IN ('" + "','".join(table_names) + "')"
+            where_clause = "WHERE t.name IN ('" + "','".join(table_names) + "')"
         sql = template.render(where_clause=where_clause)
 
         df = self._query(sql=sql)
@@ -315,9 +315,23 @@ ORDER BY [schema], [table], is_pk DESC, ic.index_column_id ASC
                         where_clause += pk
                         where_clause += " = " if index < (len(pks) - 1) else " > "
                         match table["pks_type"][index]:
-                            case "int" | "bigint" | "smallint" | "tinyint" | "float" | "decimal" | "numeric":
+                            case (
+                                "int"
+                                | "bigint"
+                                | "smallint"
+                                | "tinyint"
+                                | "float"
+                                | "decimal"
+                                | "numeric"
+                            ):
                                 where_clause += f"{list(current_pk.values())[index]}"
-                            case "char" | "nchar" | "nvarchar" | "varchar" | "uniqueidentifier":
+                            case (
+                                "char"
+                                | "nchar"
+                                | "nvarchar"
+                                | "varchar"
+                                | "uniqueidentifier"
+                            ):
                                 where_clause += f"'{list(current_pk.values())[index]}'"
                             case "datetime":
                                 d: datetime = list(current_pk.values())[index]
