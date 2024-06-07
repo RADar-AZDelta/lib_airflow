@@ -18,3 +18,10 @@ class AirflowJsonEncoder(json.JSONEncoder):
             ),
         ):
             return "0x" + obj.hex(":")
+
+
+class UtcJsonEncoder(json.JSONEncoder):
+    # Override the default method
+    def default(self, obj):
+        if isinstance(obj, (date, datetime)):
+            return obj.isoformat(timespec="milliseconds").replace("+00:00", "") + "Z"

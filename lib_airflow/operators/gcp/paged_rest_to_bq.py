@@ -1,4 +1,5 @@
 import json
+import tempfile
 import time
 import traceback
 import uuid
@@ -8,7 +9,6 @@ from typing import (
     Callable,
     Dict,
     Iterable,
-    List,
     Optional,
     Sequence,
     Tuple,
@@ -23,6 +23,9 @@ from airflow.exceptions import AirflowException
 from airflow.providers.http.hooks.http import HttpHook
 from airflow.utils.context import Context
 from airflow.utils.email import send_email
+from pyarrow import json as pajson
+
+from libs.lib_airflow.lib_airflow.utils.airflow_encoder import UtcJsonEncoder
 
 from .upload_to_bq import UploadToBigQueryOperator
 
@@ -48,14 +51,14 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         | None = None,
         func_get_auth_token: Callable[[], str] | None = None,
         func_get_request_data: Callable[
-            [str, str, Any, int, int, Any], Optional[Union[Dict[str, Any], str]]
+            [str, str, Any, int, int, list[Any]], Optional[Union[Dict[str, Any], str]]
         ]
         | None = None,
         func_extract_records_from_response_data: Callable[
-            [str, str, Any, Any], list[Any]
+            [str, str, Any, Any, Optional[Union[Dict[str, Any], str]]], list[Any]
         ]
         | None = None,
-        func_get_arrow_schema: Callable[[str, str, Any, Any], pa.schema] | None = None,
+        func_get_schema: Callable[[str, str, Any, Any], pa.schema] | None = None,
         func_get_parquet_upload_path: Callable[[str, str, Any, pl.DataFrame], str]
         | None = None,
         func_get_cluster_fields: Callable[[str, str, Any], list[str]] | None = None,
@@ -63,7 +66,19 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
             [str, str, Any, pl.DataFrame, jinja2.Environment, Any], None
         ]
         | None = None,
-        func_fetch_more_data: Callable[[str, str, Any, int, Any], bool] | None = None,
+        func_fetch_more_data: Callable[
+            [
+                str,
+                str,
+                Any,
+                int,
+                int,
+                Optional[Union[Dict[str, Any], str]],
+                Optional[list[Any]],
+            ],
+            bool,
+        ]
+        | None = None,
         page_size: int = 1000,
         upload_after_nbr_of_pages=100,
         bucket_dir: str = "upload",
@@ -89,7 +104,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         self.func_extract_records_from_response_data = (
             func_extract_records_from_response_data
         )
-        self.func_get_arrow_schema = func_get_arrow_schema
+        self.func_get_schema = func_get_schema
         self.func_get_parquet_upload_path = func_get_parquet_upload_path
         self.func_get_cluster_fields = func_get_cluster_fields
         self.func_batch_uploaded = func_batch_uploaded
@@ -131,10 +146,12 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
     def _fetch_more_data(
         self,
         endpoint_name: str,
-        endpoint_url,
+        endpoint_url: str,
         endpoint_data: Any,
         request_page: int,
-        current_page_data: list[Any] | None,
+        page_size: int,
+        request_data: Optional[Union[Dict[str, Any], str]],
+        current_page_data: Optional[list[Any]],
     ):
         if request_page == 0:
             return True
@@ -149,13 +166,20 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         upload_batch_page = 0
         current_page_data: list[Any] = []
         response_data: Any = None
+        request_data: Optional[Union[Dict[str, Any], str]] = None
 
         auth_token = None
         if self.func_get_auth_token:
             auth_token = self.func_get_auth_token()
 
         while self.func_fetch_more_data(
-            endpoint_name, endpoint_url, endpoint_data, request_page, response_data
+            endpoint_name,
+            endpoint_url,
+            endpoint_data,
+            request_page,
+            self.page_size,
+            request_data,
+            current_page_data,
         ):
             request_data = None
             if self.func_get_request_data:
@@ -165,7 +189,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
                     endpoint_data,
                     request_page,
                     self.page_size,
-                    response_data,
+                    current_page_data,
                 )
 
             headers = {}
@@ -203,7 +227,11 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
             response_data = json.loads(response.text, cls=self.json_decoder)
             current_page_data = (
                 self.func_extract_records_from_response_data(
-                    endpoint_name, endpoint_url, endpoint_data, response_data
+                    endpoint_name,
+                    endpoint_url,
+                    endpoint_data,
+                    response_data,
+                    request_data,
                 )
                 if self.func_extract_records_from_response_data
                 else response_data
@@ -237,15 +265,41 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         endpoint_data: Any,
         last_response_data: Any,
     ):
-        arrow_schema = None
-        if self.func_get_arrow_schema:
-            arrow_schema = self.func_get_arrow_schema(
+        schema = None
+        if self.func_get_schema:
+            schema = self.func_get_schema(
                 endpoint_name, endpoint_url, endpoint_data, all_data
             )
 
-        # df = pl.from_dicts(all_data, schema=polars_schema) # doesn't work well
-        table = pa.Table.from_pylist(all_data, schema=arrow_schema)
-        df = pl.from_arrow(table)
+        # # code to test if the data is invalid to the schema
+        # for item in all_data:
+        #     try:
+        #         json_object = json.dumps(item, indent=4, cls=UtcJsonEncoder)
+        #         with tempfile.NamedTemporaryFile() as tmp:
+        #             with open(tmp.name, "w") as f:
+        #                 f.write(json_object)
+        #             t = pajson.read_json(
+        #                 tmp.name,
+        #                 parse_options=pajson.ParseOptions(
+        #                     explicit_schema=arrow_schema,
+        #                     unexpected_field_behavior="ignore",
+        #                 ),
+        #             )
+        #             print(t.to_pydict())
+        #             pl.from_arrow(t)
+        #     except Exception as ex:
+        #         breakpoint()
+        # for item in all_data:
+        #     try:
+        #         table = pa.Table.from_pylist([item], schema=arrow_schema)
+        #         df = pl.from_arrow(table)
+        #     except Exception as ex:
+        #         breakpoint()
+
+        df = pl.from_dicts(all_data, schema=schema)  # doesn't work well
+        # table = pa.Table.from_pylist(all_data, schema=schema)
+        # df = pl.from_arrow(table)  # throws ('a StructArray must contain at least one field',)
+        # df = pl.from_pandas(table.to_pandas())
         df = self._check_dataframe_for_bigquery_safe_column_names(df)
         endpoint_name = self._generate_bigquery_safe_table_name(
             endpoint_name
