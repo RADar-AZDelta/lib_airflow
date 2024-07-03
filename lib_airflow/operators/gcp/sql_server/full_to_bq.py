@@ -29,7 +29,7 @@ class SqlServerFullUploadToBigQueryOperator(FullUploadToBigQueryBaseOperator):
         self,
         sql_paged_full_upload: str = """{% raw %}
 SELECT *
-FROM {{ schema }}.[{{ table }}] WITH (NOLOCK)
+FROM [{{ schema }}].[{{ table }}] WITH (NOLOCK)
 ORDER BY 1
 OFFSET {{ page * page_size }} ROWS
 FETCH NEXT {{ page_size }} ROWS ONLY
@@ -37,18 +37,18 @@ FETCH NEXT {{ page_size }} ROWS ONLY
         sql_paged_full_upload_with_cte: str = """{% raw %}
 WITH cte AS (
     SELECT {{ pk_columns }}
-    FROM {{ schema }}.[{{ table }}] WITH (NOLOCK)
+    FROM [{{ schema }}].[{{ table }}] WITH (NOLOCK)
     ORDER BY {{ order_by }}
     OFFSET {{ page * page_size }} ROWS
     FETCH NEXT {{ page_size }} ROWS ONLY
 )
 SELECT t.*
 FROM cte
-INNER JOIN {{ schema }}.[{{ table }}] t WITH (NOLOCK) ON {{ join_clause }}
+INNER JOIN [{{ schema }}].[{{ table }}] t WITH (NOLOCK) ON {{ join_clause }}
 {% endraw %}""",
         sql_topped_full_upload: str = """{% raw %}
 SELECT TOP {{ page_size }} *
-FROM {{ schema }}.[{{ table }}] WITH (NOLOCK)
+FROM [{{ schema }}].[{{ table }}] WITH (NOLOCK)
 {%- if where_clause %}
 {{ where_clause }}
 {% endif %}
@@ -94,7 +94,11 @@ ORDER BY [schema], [table], is_pk DESC, ic.index_column_id ASC
 
         where_clause = None
         if table_names:
-            where_clause = "WHERE t.name IN ('" + "','".join(table_names) + "')"
+            where_clause = (
+                "WHERE concat(s.name, '.', t.name) IN ('"
+                + "','".join(table_names)
+                + "')"
+            )
         sql = template.render(where_clause=where_clause)
 
         df = self._query(sql=sql)
