@@ -106,7 +106,7 @@ ORDER BY [schema], [table], is_pk DESC, ic.index_column_id ASC
         tables = cast(
             list[Table],
             df.sort(by=["database", "schema", "table", "index_column_id"])
-            .groupby(
+            .group_by(
                 ["database", "schema", "table"],
             )
             .agg(

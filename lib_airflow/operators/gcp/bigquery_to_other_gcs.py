@@ -80,7 +80,7 @@ order by table_catalog, table_schema, table_name, clustering_ordinal_position, o
         tables = cast(
             list[Table],
             df.sort(by=["database", "schema", "table", "clustering_ordinal_position"])
-            .groupby(
+            .group_by(
                 ["database", "schema", "table"],
             )
             .agg(

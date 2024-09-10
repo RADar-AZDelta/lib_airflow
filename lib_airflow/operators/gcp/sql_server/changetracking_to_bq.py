@@ -330,7 +330,7 @@ WHERE TABLE = '{{ table }}'
         tables = cast(
             list[Table],
             df.sort(by=["database", "schema", "table", "index_column_id"])
-            .groupby(
+            .group_by(
                 ["database", "schema", "table"],
             )
             .agg(
@@ -427,7 +427,7 @@ WHERE TABLE = '{{ table }}'
             df_changetable = (
                 df.with_columns(
                     pl.struct(change_tracking_pk_columns)
-                    .apply(lambda x: json.dumps(x, cls=AirflowJsonEncoder))
+                    .map_batches(lambda x: json.dumps(x, cls=AirflowJsonEncoder))
                     .alias("KEY")
                 )
                 .select(["SYS_CHANGE_VERSION", "SYS_CHANGE_OPERATION", "KEY"])

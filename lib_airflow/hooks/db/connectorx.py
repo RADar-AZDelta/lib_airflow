@@ -74,15 +74,27 @@ class ConnectorXHook(BaseHook):
         else:
             conn = unquote(self.connection.get_uri())
 
-        df = cx.read_sql(
-            conn=conn,
-            query=query,  # type: ignore
-            return_type=return_type,
-            protocol=protocol,
-            partition_on=partition_on,
-            partition_range=partition_range,
-            partition_num=partition_num,
-        )
+        if return_type == "polars":
+            table = cx.read_sql(
+                conn=conn,
+                query=query,  # type: ignore
+                return_type="arrow",
+                protocol=protocol,
+                partition_on=partition_on,
+                partition_range=partition_range,
+                partition_num=partition_num,
+            )
+            df = pl.from_arrow(table)
+        else:
+            df = cx.read_sql(
+                conn=conn,
+                query=query,  # type: ignore
+                return_type=return_type,
+                protocol=protocol,
+                partition_on=partition_on,
+                partition_range=partition_range,
+                partition_num=partition_num,
+            )
         return df
 
     def test_connection(self):
