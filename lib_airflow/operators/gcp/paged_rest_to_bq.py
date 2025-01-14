@@ -296,7 +296,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         #     except Exception as ex:
         #         breakpoint()
 
-        df = pl.from_dicts(all_data, schema=schema)  # doesn't work well
+        df = pl.from_dicts(all_data, schema=schema, strict=False)  # doesn't work well
         # table = pa.Table.from_pylist(all_data, schema=schema)
         # df = pl.from_arrow(table)  # throws ('a StructArray must contain at least one field',)
         # df = pl.from_pandas(table.to_pandas())
