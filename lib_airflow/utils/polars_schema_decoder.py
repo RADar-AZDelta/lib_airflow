@@ -34,6 +34,8 @@ class PolarsSchemaJsonDecoder(json.JSONDecoder):
                         dct[k] = pl.Datetime(
                             time_unit=self.time_unit, time_zone=self.time_zone
                         )
+                    case "boolean":
+                        dct[k] = pl.Boolean
                     case "bool":
                         dct[k] = pl.Boolean
                     case "number":

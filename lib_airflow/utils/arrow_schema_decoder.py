@@ -34,6 +34,8 @@ class ArrowSchemaJsonDecoder(json.JSONDecoder):
                         dct[k] = pa.timestamp(
                             unit=self.timestamp_unit, tz=self.timestamp_tz
                         )
+                    case "boolean":
+                        dct[k] = pa.bool_()
                     case "bool":
                         dct[k] = pa.bool_()
                     case "number":

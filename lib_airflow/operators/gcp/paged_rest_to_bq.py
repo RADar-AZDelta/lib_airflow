@@ -131,6 +131,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
             except Exception as ex:
                 str_error = traceback.format_exc()
                 self.log.error("Error on endpoint '%s': %s", name, ex)
+                breakpoint()
 
             if str_error:
                 try:
@@ -295,8 +296,12 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         #         df = pl.from_arrow(table)
         #     except Exception as ex:
         #         breakpoint()
+        try:
+            df = pl.from_dicts(all_data, schema=schema, strict=True)
+        except Exception as ex:
+            breakpoint()
+            raise ex
 
-        df = pl.from_dicts(all_data, schema=schema, strict=False)  # doesn't work well
         # table = pa.Table.from_pylist(all_data, schema=schema)
         # df = pl.from_arrow(table)  # throws ('a StructArray must contain at least one field',)
         # df = pl.from_pandas(table.to_pandas())
