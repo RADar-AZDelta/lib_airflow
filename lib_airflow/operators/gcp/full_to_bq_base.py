@@ -27,6 +27,7 @@ class FullUploadToBigQueryBaseOperator(QueryAndUploadToBigQueryOperator, ABC):
         self,
         bookkeeper_dataset: str,
         bookkeeper_table: str,
+        destination_project_id: str,
         destination_dataset: str,
         func_get_table_names: Callable[[str], list[str]] | None = None,
         chunk: int = 0,
@@ -65,6 +66,7 @@ ON (target.database = source.database and target.schema = source.schema and targ
         self.sql_upsert_bookkeeper_table = sql_upsert_bookkeeper_table
         self.page_size = page_size
         self.bucket_dir = bucket_dir
+        self.destination_project_id = destination_project_id
         self.destination_dataset = destination_dataset
         self.to_email_on_error = to_email_on_error
         self.func_before_execute_table = func_before_execute_table

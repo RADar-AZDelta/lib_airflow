@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: gpl3+
 
 import re
+import uuid
 from tempfile import NamedTemporaryFile, _TemporaryFileWrapper
 from typing import Any, Callable, List, Optional, Sequence, Union
 
@@ -87,7 +88,9 @@ class UploadToBigQueryOperator(BaseOperator):
     def _load_parquets_in_bq(
         self,
         source_uris: List[str],
-        destination_project_dataset_table: str,
+        destination_project_id: str,
+        destination_dataset: str,
+        destination_table: str,
         cluster_fields: Optional[List[str]] = None,
         write_disposition="WRITE_TRUNCATE",
         schema_update_options=None,
@@ -104,29 +107,33 @@ class UploadToBigQueryOperator(BaseOperator):
         bq_hook = self._get_bq_hook()
 
         try:
-            bq_hook.run_load(
-                destination_project_dataset_table=destination_project_dataset_table,
-                source_uris=source_uris,
-                source_format="PARQUET",
-                write_disposition=write_disposition,
-                cluster_fields=cluster_fields,
-                autodetect=True,
-                schema_update_options=schema_update_options,
-            )
+            configuration = {
+                "load": {  # https://cloud.google.com/bigquery/docs/reference/rest/v2/Job#JobConfigurationLoad
+                    "autodetect": True,
+                    "createDisposition": "CREATE_IF_NEEDED",
+                    "destinationTable": {
+                        "projectId": destination_project_id,
+                        "datasetId": destination_dataset,
+                        "tableId": destination_table,
+                    },
+                    "clustering": {"fields": cluster_fields},
+                    "sourceFormat": "PARQUET",
+                    "sourceUris": source_uris,
+                    "writeDisposition": write_disposition,
+                    "ignoreUnknownValues": False,
+                    "schemaUpdateOptions": schema_update_options,
+                },
+            }
+            job_id = f"airflow_load_{destination_project_id}_{destination_dataset}_{destination_table}_{str(uuid.uuid4())}"
+            job_id = re.sub(r"[:\-+.]", "_", job_id)
+
+            bq_hook.insert_job(configuration=configuration)
         except BadRequest as br:
             if br.message.startswith("Incompatible table partitioning specification."):
                 bq_hook.delete_table(
-                    table_id=destination_project_dataset_table
+                    table_id=f"{destination_project_id}.{destination_dataset}.{destination_table}"
                 )  # delete table when Incompatible table partitioning and try again
-                bq_hook.run_load(
-                    destination_project_dataset_table=destination_project_dataset_table,
-                    source_uris=source_uris,
-                    source_format="PARQUET",
-                    write_disposition=write_disposition,
-                    cluster_fields=cluster_fields,
-                    autodetect=True,
-                    schema_update_options=schema_update_options,
-                )
+                bq_hook.insert_job(configuration=configuration)
             else:
                 raise br
 

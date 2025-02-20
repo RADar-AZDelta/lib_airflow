@@ -169,7 +169,9 @@ order by table_catalog, table_schema, table_name, clustering_ordinal_position, o
                 source_uris=[
                     f"gs://{self.bucket}/{self.bucket_dir}/{table['table']}/full/{table['table']}_*.parquet"
                 ],
-                destination_project_dataset_table=f"{self.destination_dataset}.{table['table']}",
+                destination_project_id=self.destination_project_id,
+                destination_dataset=self.destination_dataset,
+                destination_table=table["table"],
                 cluster_fields=self._get_cluster_fields(table),
             )
 

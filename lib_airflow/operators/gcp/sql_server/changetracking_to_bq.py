@@ -443,7 +443,9 @@ WHERE TABLE = '{{ table }}'
                 source_uris=[
                     f"gs://{self.bucket}/{self.bucket_dir}/CHANGETABLE/{table['table']}/{table['table']}_{last_synchronization_version}.parquet"
                 ],
-                destination_project_dataset_table=f"{self.destination_dataset}.CHANGETABLE",
+                destination_project_id=self.destination_project_id,
+                destination_dataset=self.destination_dataset,
+                destination_table="CHANGETABLE",
                 cluster_fields=["TABLE", "SYS_CHANGE_VERSION"],
                 write_disposition=bq.WriteDisposition.WRITE_APPEND,
             )
@@ -476,7 +478,9 @@ WHERE TABLE = '{{ table }}'
                 source_uris=[
                     f"gs://{self.bucket}/{self.bucket_dir}/{table['table']}/incremental/{table['table']}_{last_synchronization_version}.parquet"
                 ],
-                destination_project_dataset_table=f"{self.destination_dataset}._incremental_{table['table']}",
+                destination_project_id=self.destination_project_id,
+                destination_dataset=self.destination_dataset,
+                destination_table=f"_incremental_{table['table']}",
                 cluster_fields=self._get_cluster_fields(table),
             )
 

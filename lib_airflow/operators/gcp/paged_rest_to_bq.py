@@ -41,6 +41,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         self,
         http_conn_id: str,
         endpoints: dict[str, Tuple[str, Any]] | str,
+        destination_project_id: str,
         destination_dataset: str,
         func_create_merge_statement: Callable[
             [str, str, str, Any, pl.DataFrame, jinja2.Environment], str
@@ -115,6 +116,7 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
         self.page_size = page_size
         self.upload_every_nbr_of_pages = upload_after_nbr_of_pages
         self.bucket_dir = bucket_dir
+        self.destination_project_id = destination_project_id
         self.destination_dataset = destination_dataset
         self.to_email_on_error = to_email_on_error
 
@@ -336,7 +338,9 @@ class PagedRestToBigQueryOperator(UploadToBigQueryOperator):
 
         self._load_parquets_in_bq(
             source_uris=[f"gs://{self.bucket}/{object_name}"],
-            destination_project_dataset_table=f"{self.destination_dataset}._incremental_{endpoint_name}",
+            destination_project_id=self.destination_project_id,
+            destination_dataset=self.destination_dataset,
+            destination_table=f"_incremental_{endpoint_name}",
             cluster_fields=cluster_fields,
         )
 

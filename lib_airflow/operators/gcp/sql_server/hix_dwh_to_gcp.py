@@ -248,7 +248,9 @@ inner join {{ schema }}.{{ table }} t on t.{{ pk_name }} = cte.{{ pk_name }} and
                 source_uris=[
                     f"gs://{self.bucket}/{self.bucket_dir}/{table['table']}/cycle_{bookkeeper_table['cycleid']}/{table['table']}_*.parquet"
                 ],
-                destination_project_dataset_table=f"{self.destination_dataset}.{table['table']}",
+                destination_project_id=self.destination_project_id,
+                destination_dataset=self.destination_dataset,
+                destination_table=table["table"],
                 # cluster_fields=self._get_cluster_fields(table), # "Clustering is not supported on non-orderable column 'HdwLinkSha1Key' of type 'STRUCT<list ARRAY<STRUCT<item INT64>>>'"
                 write_disposition="WRITE_APPEND",
                 schema_update_options=["ALLOW_FIELD_ADDITION"],
