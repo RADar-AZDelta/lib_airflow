@@ -424,10 +424,11 @@ WHERE TABLE = '{{ table }}'
             # ----------------------------------------------
             # Upload metadata to CHANGEABLE
             # ----------------------------------------------
+
             df_changetable = (
                 df.with_columns(
                     pl.struct(change_tracking_pk_columns)
-                    .map_batches(lambda x: json.dumps(x, cls=AirflowJsonEncoder))
+                    .map_elements(lambda x: json.dumps(x, cls=AirflowJsonEncoder))
                     .alias("KEY")
                 )
                 .select(["SYS_CHANGE_VERSION", "SYS_CHANGE_OPERATION", "KEY"])
