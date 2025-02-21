@@ -428,7 +428,7 @@ WHERE TABLE = '{{ table }}'
             df_changetable = (
                 df.with_columns(
                     pl.struct(change_tracking_pk_columns)
-                    .map_elements(lambda x: json.dumps(x, cls=AirflowJsonEncoder))
+                    .map_elements(lambda x: json.dumps(x, cls=AirflowJsonEncoder), return_dtype=pl.Utf8)
                     .alias("KEY")
                 )
                 .select(["SYS_CHANGE_VERSION", "SYS_CHANGE_OPERATION", "KEY"])
