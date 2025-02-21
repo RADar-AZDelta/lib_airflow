@@ -105,28 +105,29 @@ class UploadToBigQueryOperator(BaseOperator):
             schema_update_options (_type_, optional): Allows the schema of the destination table to be updated as a side effect of the load job. Defaults to None.
         """
         bq_hook = self._get_bq_hook()
+        load = {  # https://cloud.google.com/bigquery/docs/reference/rest/v2/Job#JobConfigurationLoad
+            "autodetect": True,
+            "createDisposition": "CREATE_IF_NEEDED",
+            "destinationTable": {
+                "projectId": destination_project_id,
+                "datasetId": destination_dataset,
+                "tableId": destination_table,
+            },
+            "sourceFormat": "PARQUET",
+            "sourceUris": source_uris,
+            "writeDisposition": write_disposition,
+            "ignoreUnknownValues": False,
+            "schemaUpdateOptions": schema_update_options,
+        }
+
+        if cluster_fields:
+            load["clustering"] = {"fields": cluster_fields}
+
+        configuration = {"load": load}
+        job_id = f"airflow_load_{destination_project_id}_{destination_dataset}_{destination_table}_{str(uuid.uuid4())}"
+        job_id = re.sub(r"[:\-+.]", "_", job_id)
 
         try:
-            configuration = {
-                "load": {  # https://cloud.google.com/bigquery/docs/reference/rest/v2/Job#JobConfigurationLoad
-                    "autodetect": True,
-                    "createDisposition": "CREATE_IF_NEEDED",
-                    "destinationTable": {
-                        "projectId": destination_project_id,
-                        "datasetId": destination_dataset,
-                        "tableId": destination_table,
-                    },
-                    "clustering": {"fields": cluster_fields},
-                    "sourceFormat": "PARQUET",
-                    "sourceUris": source_uris,
-                    "writeDisposition": write_disposition,
-                    "ignoreUnknownValues": False,
-                    "schemaUpdateOptions": schema_update_options,
-                },
-            }
-            job_id = f"airflow_load_{destination_project_id}_{destination_dataset}_{destination_table}_{str(uuid.uuid4())}"
-            job_id = re.sub(r"[:\-+.]", "_", job_id)
-
             bq_hook.insert_job(configuration=configuration)
         except BadRequest as br:
             if br.message.startswith("Incompatible table partitioning specification."):
