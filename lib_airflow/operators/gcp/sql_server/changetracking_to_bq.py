@@ -101,7 +101,8 @@ WHERE i.deleted = true
 CREATE TABLE IF NOT EXISTS `{{ dataset }}._deletes_{{ table }}` 
 AS
 SELECT CAST(NULL AS INT64) AS SYS_CHANGE_VERSION, t.*
-FROM `{{ dataset }}.{{ table }}` t;
+FROM `{{ dataset }}.{{ table }}` t
+LIMIT 0;
 {% endraw %}""",
         sql_get_tables_metadata: str = """{% raw %}
 SELECT DB_NAME(DB_ID()) AS [database]
