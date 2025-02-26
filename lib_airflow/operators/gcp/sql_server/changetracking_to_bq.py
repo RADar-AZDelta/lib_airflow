@@ -38,6 +38,8 @@ class SqlServerChangeTrackinToBigQueryOperator(SqlServerFullUploadToBigQueryOper
         "sql_change_tracking_table_pk_columns",
         "sql_incremental_upload",
         "sql_cleanup_changetable",
+        "sql_bq_deletes_insert",
+        "sql_bq_create_deletes_table",
     )
 
     def __init__(
@@ -66,8 +68,9 @@ ON (target.database = source.database and target.schema = source.schema and targ
 {% endraw %}""",
         sql_get_change_tracking_version: str = "select CHANGE_TRACKING_CURRENT_VERSION() as version",
         sql_incremental_upload: str = """{% raw %}
-SELECT ct.SYS_CHANGE_VERSION, ct.SYS_CHANGE_OPERATION, {{ pk_columns }}{% if columns %}, {{ columns }}{% endif %}
+SELECT ct.SYS_CHANGE_VERSION, ct.SYS_CHANGE_OPERATION, tc.commit_time, {{ pk_columns }}{% if columns %}, {{ columns }}{% endif %}
 FROM CHANGETABLE(CHANGES {{ schema }}.{{ change_tracking_table }}, {{ last_synchronization_version }}) AS ct
+join sys.dm_tran_commit_table tc on ct.sys_change_version = tc.commit_ts
 left outer join {{ schema }}.{{ table }} t with (nolock) on {{ join_on_clause }}
 ORDER BY SYS_CHANGE_VERSION
 OFFSET 0 ROWS
@@ -86,6 +89,19 @@ WHEN MATCHED
 WHEN NOT MATCHED 
     THEN INSERT({{ insert_columns }})
     VALUES({{ insert_values }})
+{% endraw %}""",
+        sql_bq_deletes_insert: str = """{% raw %}
+INSERT INTO `{{ dataset }}._deletes_{{ table }}`
+SELECT i.SYS_CHANGE_VERSION, o.*
+FROM `{{ dataset }}._incremental_{{ table }}` i
+LEFT OUTER JOIN `{{ dataset }}.{{ table }}` o ON {{ condition_clause }}
+WHERE i.deleted = true 
+{% endraw %}""",
+        sql_bq_create_deletes_table: str = """{% raw %}
+CREATE TABLE IF NOT EXISTS `{{ dataset }}._deletes_{{ table }}` 
+AS
+SELECT CAST(NULL AS INT64) AS SYS_CHANGE_VERSION, t.*
+FROM `{{ dataset }}.{{ table }}` t;
 {% endraw %}""",
         sql_get_tables_metadata: str = """{% raw %}
 SELECT DB_NAME(DB_ID()) AS [database]
@@ -151,6 +167,8 @@ WHERE TABLE = '{{ table }}'
         self.sql_get_change_tracking_version = sql_get_change_tracking_version
         self.sql_incremental_upload = sql_incremental_upload
         self.sql_bq_merge = sql_bq_merge
+        self.sql_bq_deletes_insert = sql_bq_deletes_insert
+        self.sql_bq_create_deletes_table = sql_bq_create_deletes_table
         self.sql_get_tables_metadata = sql_get_tables_metadata
         self.sql_get_tables_metadata_referring_to_other_change_tracking_table = (
             sql_get_tables_metadata_referring_to_other_change_tracking_table
@@ -421,6 +439,24 @@ WHERE TABLE = '{{ table }}'
             df = self._check_dataframe_for_bigquery_safe_column_names(df)
             last_synchronization_version = df["SYS_CHANGE_VERSION"].max()
 
+            safe_pks = self._generate_bigquery_safe_column_names(table["pks"])
+            safe_columns = self._generate_bigquery_safe_column_names(table["columns"])
+
+            insert_columns = ", ".join(map(lambda column: f"`{column}`", safe_pks))
+            insert_values = ", ".join(map(lambda column: f"`{column}`", safe_pks))
+
+            if table["columns"]:
+                insert_columns = (
+                    insert_columns
+                    + ", "
+                    + ", ".join(map(lambda column: f"`{column}`", safe_columns))
+                )
+                insert_values = (
+                    insert_values
+                    + ", "
+                    + ", ".join(map(lambda column: f"`{column}`", safe_columns))
+                )
+
             # ----------------------------------------------
             # Upload metadata to CHANGEABLE
             # ----------------------------------------------
@@ -428,10 +464,15 @@ WHERE TABLE = '{{ table }}'
             df_changetable = (
                 df.with_columns(
                     pl.struct(change_tracking_pk_columns)
-                    .map_elements(lambda x: json.dumps(x, cls=AirflowJsonEncoder), return_dtype=pl.Utf8)
+                    .map_elements(
+                        lambda x: json.dumps(x, cls=AirflowJsonEncoder),
+                        return_dtype=pl.Utf8,
+                    )
                     .alias("KEY")
                 )
-                .select(["SYS_CHANGE_VERSION", "SYS_CHANGE_OPERATION", "KEY"])
+                .select(
+                    ["SYS_CHANGE_VERSION", "SYS_CHANGE_OPERATION", "commit_time", "KEY"]
+                )
                 .with_columns(pl.lit(table["table"]).alias("TABLE"))
             )
 
@@ -452,7 +493,7 @@ WHERE TABLE = '{{ table }}'
             )
 
             # ----------------------------------------------
-            # Upload and merge changes to table
+            # Upload to _incremental_ table
             # ----------------------------------------------
             df = df.unique(subset=change_tracking_pk_columns, keep="last")
 
@@ -467,7 +508,8 @@ WHERE TABLE = '{{ table }}'
                 .alias("deleted")
             )  # add deleted column
             df.drop_in_place("SYS_CHANGE_OPERATION")
-            df.drop_in_place("SYS_CHANGE_VERSION")
+            # df.drop_in_place("SYS_CHANGE_VERSION")
+            df.drop_in_place("commit_time")
 
             self._upload_parquet(
                 df=df,
@@ -485,26 +527,64 @@ WHERE TABLE = '{{ table }}'
                 cluster_fields=self._get_cluster_fields(table),
             )
 
+            # ----------------------------------------------
+            # Store deleted records in seperate table
+            # ----------------------------------------------
+            hook = self._get_bq_hook()
+            client = hook.get_client()
+            deletes_table_exists = False
+            try:
+                client.get_table(
+                    f"{self.destination_project_id}.{self.destination_dataset}._deletes_{table['table']}"
+                )  # Make an API request.
+                deletes_table_exists = True
+            except NotFound:
+                pass
+
+            if not deletes_table_exists:
+                table_exists = False
+                try:
+                    client.get_table(
+                        f"{self.destination_project_id}.{self.destination_dataset}.{table['table']}"
+                    )  # Make an API request.
+                    table_exists = True
+                except NotFound:
+                    pass  # the first time the base table wil not exists, so we skip the creation of the deletes table
+                if table_exists:
+                    template = jinja_env.from_string(self.sql_bq_create_deletes_table)
+                    sql = template.render(
+                        dataset=self.destination_dataset,
+                        table=table["table"],
+                    )
+                    self._run_bq_job(
+                        sql,
+                        job_id=f"airflow_{table['schema']}_create_deletes_{table['table']}_{str(uuid.uuid4())}",
+                    )
+                    deletes_table_exists = True
+
+            if deletes_table_exists:
+                template = jinja_env.from_string(self.sql_bq_deletes_insert)
+                sql = template.render(
+                    dataset=self.destination_dataset,
+                    table=table["table"],
+                    condition_clause=" and ".join(
+                        map(
+                            lambda column: f"i.`{column}` = o.`{column}`",
+                            safe_pks or safe_columns,
+                        )
+                    ),
+                    insert_columns=insert_columns,
+                    insert_values=insert_values,
+                )
+                self._run_bq_job(
+                    sql,
+                    job_id=f"airflow_{table['schema']}_deletes_{table['table']}_{str(uuid.uuid4())}",
+                )
+
+            # ----------------------------------------------
+            # Merge changes to table
+            # ----------------------------------------------
             template = jinja_env.from_string(self.sql_bq_merge)
-
-            safe_pks = self._generate_bigquery_safe_column_names(table["pks"])
-            safe_columns = self._generate_bigquery_safe_column_names(table["columns"])
-
-            insert_columns = ", ".join(map(lambda column: f"`{column}`", safe_pks))
-            insert_values = ", ".join(map(lambda column: f"`{column}`", safe_pks))
-
-            if table["columns"]:
-                insert_columns = (
-                    insert_columns
-                    + ", "
-                    + ", ".join(map(lambda column: f"`{column}`", safe_columns))
-                )
-                insert_values = (
-                    insert_values
-                    + ", "
-                    + ", ".join(map(lambda column: f"`{column}`", safe_columns))
-                )
-
             sql = template.render(
                 dataset=self.destination_dataset,
                 table=table["table"],
@@ -521,6 +601,10 @@ WHERE TABLE = '{{ table }}'
                 sql,
                 job_id=f"airflow_{table['schema']}_{table['table']}_{str(uuid.uuid4())}",
             )
+
+            # ----------------------------------------------
+            # Cleanup
+            # ----------------------------------------------
             self._delete_bq_table(
                 dataset_table=f"{self.destination_dataset}._incremental_{table['table']}",
             )
